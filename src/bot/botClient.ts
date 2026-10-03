@@ -225,6 +225,126 @@ async function playNext(guildId: string) {
   }
 }
 
+// Mini Games: Blackjack & Caro PVP Engine
+interface Card {
+  suit: string;
+  value: string;
+  weight: number;
+}
+interface BlackjackGame {
+  userId: string;
+  deck: Card[];
+  playerHand: Card[];
+  dealerHand: Card[];
+  state: 'playing' | 'stand' | 'finished';
+}
+export const blackjackGames = new Map<string, BlackjackGame>();
+
+function createDeck(): Card[] {
+  const suits = ['♠', '♥', '♦', '♣'];
+  const values = [
+    { name: '2', weight: 2 },
+    { name: '3', weight: 3 },
+    { name: '4', weight: 4 },
+    { name: '5', weight: 5 },
+    { name: '6', weight: 6 },
+    { name: '7', weight: 7 },
+    { name: '8', weight: 8 },
+    { name: '9', weight: 9 },
+    { name: '10', weight: 10 },
+    { name: 'J', weight: 10 },
+    { name: 'Q', weight: 10 },
+    { name: 'K', weight: 10 },
+    { name: 'A', weight: 11 }
+  ];
+  const deck: Card[] = [];
+  for (const suit of suits) {
+    for (const val of values) {
+      deck.push({ suit, value: val.name, weight: val.weight });
+    }
+  }
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+
+function calculateHandScore(hand: Card[]) {
+  let score = 0;
+  let aces = 0;
+  for (const card of hand) {
+    score += card.weight;
+    if (card.value === 'A') aces++;
+  }
+  while (score > 21 && aces > 0) {
+    score -= 10;
+    aces--;
+  }
+  return score;
+}
+
+function formatHand(hand: Card[], hideSecondCard = false) {
+  if (hideSecondCard && hand.length >= 2) {
+    return `\`[ ${hand[0].suit} ${hand[0].value} ]\` \`[ 🎴 ?? ]\``;
+  }
+  return hand.map(c => `\`[ ${c.suit} ${c.value} ]\``).join(' ');
+}
+
+// Caro PVP Game State (2 Players Only, No Bot)
+interface CaroGame {
+  gameId: string;
+  guildId: string;
+  playerX: string;
+  playerO: string;
+  turn: 'X' | 'O';
+  board: (string | null)[];
+  winner: string | null;
+}
+export const caroGames = new Map<string, CaroGame>();
+
+function checkCaroWinner(board: (string | null)[]) {
+  const lines = [
+    [0, 1, 2], [3, 4, 5], [6, 7, 8],
+    [0, 3, 6], [1, 4, 7], [2, 5, 8],
+    [0, 4, 8], [2, 4, 6]
+  ];
+  for (const [a, b, c] of lines) {
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+      return board[a];
+    }
+  }
+  if (board.every(cell => cell !== null)) {
+    return 'tie';
+  }
+  return null;
+}
+
+function buildCaroRows(game: CaroGame) {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let r = 0; r < 3; r++) {
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (let c = 0; c < 3; c++) {
+      const idx = r * 3 + c;
+      const cell = game.board[idx];
+      const btn = new ButtonBuilder()
+        .setCustomId(`caro_${game.gameId}_${idx}`)
+        .setLabel(cell ? (cell === 'X' ? '❌' : '⭕') : '➖')
+        .setStyle(
+          cell === 'X'
+            ? ButtonStyle.Danger
+            : cell === 'O'
+            ? ButtonStyle.Primary
+            : ButtonStyle.Secondary
+        )
+        .setDisabled(game.winner !== null || cell !== null);
+      row.addComponents(btn);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
 // Slash Commands
 const slashCommands = [
   {
@@ -799,7 +919,7 @@ const slashCommands = [
   {
     data: new SlashCommandBuilder()
       .setName('setup-owner-role')
-      .setDescription('Bot tạo Role Quyền Riêng Tối Cao (Administrator) và tự động gán cho Chủ Sở Hữu (Owner)')
+      .setDescription('Bot tạo Role Quyền Riêng Tối Cao (Administrator) và gán cho Chủ Sở Hữu hoặc người khác')
       .addStringOption(opt =>
         opt.setName('name')
           .setDescription('Tên Role mong muốn (mặc định: 👑 SOVEREIGN OWNER)')
@@ -816,6 +936,11 @@ const slashCommands = [
             { name: 'Xanh Neon Tối Tân (Cyber Green)', value: 'green' },
             { name: 'Xanh Băng Thanh Lịch (Cyan Blue)', value: 'cyan' }
           )
+      )
+      .addUserOption(opt =>
+        opt.setName('target')
+          .setDescription('Người nhận Role (để trống nếu muốn tự gán cho chính bạn)')
+          .setRequired(false)
       ),
     async execute(interaction: ChatInputCommandInteraction) {
       const guild = interaction.guild!;
@@ -832,6 +957,7 @@ const slashCommands = [
 
       const roleName = interaction.options.getString('name') || '👑 SOVEREIGN OWNER';
       const colorOption = interaction.options.getString('color') || 'gold';
+      const targetUser = interaction.options.getUser('target') || interaction.user;
 
       const colorMap: Record<string, number> = {
         gold: 0xffd700,
@@ -853,7 +979,7 @@ const slashCommands = [
             hoist: true,
             permissions: [PermissionsBitField.Flags.Administrator],
             mentionable: false,
-            reason: `Bot cấp Role Quyền Riêng Tối Cao cho Chủ Sở Hữu (${interaction.user.tag})`
+            reason: `Bot cấp Role Quyền Riêng Tối Cao theo yêu cầu của Owner (${interaction.user.tag})`
           });
         } else {
           await role.edit({
@@ -869,30 +995,294 @@ const slashCommands = [
           await role.setPosition(botHighest - 1).catch(() => null);
         }
 
-        // Add the role to the owner
-        const targetMember = await guild.members.fetch(interaction.user.id);
-        await targetMember.roles.add(role, 'Gán Role Quyền Riêng cho Owner');
+        // Add the role to target member
+        const targetMember = await guild.members.fetch(targetUser.id);
+        await targetMember.roles.add(role, 'Gán Role Quyền Riêng Tối Cao');
 
         const embed = new EmbedBuilder()
-          .setTitle('👑 ĐÃ THIẾT LẬP VÀ GÁN ROLE TỐI CAO CHO CHỦ SỞ HỮU THÀNH CÔNG!')
+          .setTitle('👑 ĐÃ THIẾT LẬP VÀ GÁN ROLE TỐI CAO THÀNH CÔNG!')
           .setDescription(
-            `Hệ thống AegisCore đã sử dụng thẩm quyền tối cao để khởi tạo và trao quyền cho bạn!\n\n` +
+            `Hệ thống AegisCore đã sử dụng thẩm quyền tối cao để khởi tạo và trao quyền!\n\n` +
             `• **Tên Role:** <@&${role.id}> (\`${role.name}\`)\n` +
             `• **Được gán cho:** <@${targetMember.id}> (\`${targetMember.user.tag}\`)\n` +
             `• **Quyền hạn nạp sẵn:** \`Administrator 100% (Toàn Quyền Toàn Năng)\`\n` +
             `• **Vị trí hiển thị:** Tách riêng biệt ở nhóm trên cùng (Hoisted)\n` +
             `• **Màu sắc:** \`${colorOption.toUpperCase()}\`\n` +
-            `• **Cơ chế bảo vệ:** 🛡️ Bất khả xâm phạm (Nếu bị kẻ khác gỡ, Bot sẽ tự động gán lại ngay lập tức).`
+            `• **Cơ chế bảo vệ:** 🛡️ Bất khả xâm phạm (Nếu là Chủ Sở Hữu và bị kẻ khác gỡ, Bot sẽ tự động gán lại ngay lập tức).`
           )
           .setColor(selectedColor)
           .setThumbnail(targetMember.user.displayAvatarURL())
-          .setFooter({ text: 'Aegis Security • Supreme Owner Privilege' })
+          .setFooter({ text: 'Aegis Security • Supreme Privilege' })
           .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
       } catch (err: any) {
         await interaction.editReply(`❌ Lỗi cấp quyền: ${err.message}. Hãy đảm bảo Role của Bot đang ở vị trí cao hơn trong Server Settings!`);
       }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('role-give')
+      .setDescription('Trao vai trò (Role) cho chính bạn hoặc cho người khác')
+      .addUserOption(opt =>
+        opt.setName('member')
+          .setDescription('Thành viên nhận Role')
+          .setRequired(true)
+      )
+      .addRoleOption(opt =>
+        opt.setName('role')
+          .setDescription('Vai trò cần trao')
+          .setRequired(true)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === interaction.guild!.ownerId;
+      const hasPerm = interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageRoles);
+
+      if (!isOwner && !hasPerm) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Manage Roles để trao vai trò.', ephemeral: true });
+      }
+
+      const targetUser = interaction.options.getUser('member', true);
+      const targetRole = interaction.options.getRole('role', true);
+      const guild = interaction.guild!;
+
+      try {
+        const targetMember = await guild.members.fetch(targetUser.id);
+        const botMember = guild.members.me;
+
+        if (botMember && botMember.roles.highest.position <= (targetRole as any).position) {
+          return interaction.reply({
+            content: `❌ Bot không thể trao vai trò <@&${targetRole.id}> vì vai trò này nằm cao hơn hoặc ngang bằng với vai trò cao nhất của Bot trong Server Settings!`,
+            ephemeral: true
+          });
+        }
+
+        await targetMember.roles.add(targetRole.id, `Cấp bởi ${interaction.user.tag}`);
+        await interaction.reply(`✅ Đã trao thành công vai trò <@&${targetRole.id}> cho <@${targetMember.id}>!`);
+      } catch (err: any) {
+        await interaction.reply({ content: `❌ Lỗi: ${err.message}`, ephemeral: true });
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('role-take')
+      .setDescription('Thu hồi vai trò (Role) khỏi thành viên')
+      .addUserOption(opt =>
+        opt.setName('member')
+          .setDescription('Thành viên bị gỡ Role')
+          .setRequired(true)
+      )
+      .addRoleOption(opt =>
+        opt.setName('role')
+          .setDescription('Vai trò cần thu hồi')
+          .setRequired(true)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === interaction.guild!.ownerId;
+      const hasPerm = interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageRoles);
+
+      if (!isOwner && !hasPerm) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Manage Roles để gỡ vai trò.', ephemeral: true });
+      }
+
+      const targetUser = interaction.options.getUser('member', true);
+      const targetRole = interaction.options.getRole('role', true);
+      const guild = interaction.guild!;
+
+      try {
+        const targetMember = await guild.members.fetch(targetUser.id);
+        await targetMember.roles.remove(targetRole.id, `Thu hồi bởi ${interaction.user.tag}`);
+        await interaction.reply(`✅ Đã thu hồi thành công vai trò <@&${targetRole.id}> khỏi <@${targetMember.id}>!`);
+      } catch (err: any) {
+        await interaction.reply({ content: `❌ Lỗi: ${err.message}`, ephemeral: true });
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('blackjack')
+      .setDescription('Mini game Xì Dách (Blackjack) 21 điểm với lá bài tương tác nút bấm 🃏'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const deck = createDeck();
+      const playerHand = [deck.pop()!, deck.pop()!];
+      const dealerHand = [deck.pop()!, deck.pop()!];
+
+      const playerScore = calculateHandScore(playerHand);
+      const isNaturalBj = playerScore === 21;
+
+      const game: BlackjackGame = {
+        userId: interaction.user.id,
+        deck,
+        playerHand,
+        dealerHand,
+        state: isNaturalBj ? 'finished' : 'playing'
+      };
+      blackjackGames.set(interaction.user.id, game);
+
+      const embed = new EmbedBuilder()
+        .setTitle('🃏 SÒNG BẠC BLACKJACK / XÌ DÁCH 21 ĐIỂM')
+        .setDescription(
+          `**Người chơi:** <@${interaction.user.id}>\n\n` +
+          `• **Bài của bạn:** ${formatHand(playerHand)} (Điểm: **${playerScore}**)\n` +
+          `• **Bài của Nhà Cái (Dealer):** ${formatHand(dealerHand, !isNaturalBj)} (Điểm hiện: **${isNaturalBj ? calculateHandScore(dealerHand) : dealerHand[0].weight}**)\n\n` +
+          (isNaturalBj
+            ? '🎉 **XÌ DÁCH TỰ NHIÊN (BLACKJACK)! BẠN ĐÃ THẮNG LỚN!**'
+            : '👉 Bấm **🃏 Rút Thêm** hoặc **✋ Dằn Bài** để so điểm:')
+        )
+        .setColor(isNaturalBj ? 0x2ecc71 : 0xf1c40f)
+        .setFooter({ text: 'Aegis Casino • Blackjack Room' })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`bj_hit_${interaction.user.id}`)
+          .setLabel('🃏 Rút Thêm (Hit)')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(isNaturalBj),
+        new ButtonBuilder()
+          .setCustomId(`bj_stand_${interaction.user.id}`)
+          .setLabel('✋ Dằn Bài (Stand)')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(isNaturalBj)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('caro')
+      .setDescription('Thách đấu Cờ Caro (Tic-Tac-Toe) 2 người chơi thật sự (Không đấu với Bot)')
+      .addUserOption(opt =>
+        opt.setName('opponent')
+          .setDescription('Chọn đối thủ bạn muốn thách đấu')
+          .setRequired(true)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const opponent = interaction.options.getUser('opponent', true);
+
+      if (opponent.bot) {
+        return interaction.reply({
+          content: '❌ Lệnh cờ Caro chỉ dành cho 2 người chơi thật sự tranh tài, không thể thách đấu với Bot!',
+          ephemeral: true
+        });
+      }
+
+      if (opponent.id === interaction.user.id) {
+        return interaction.reply({
+          content: '❌ Bạn không thể tự thách đấu chính mình! Hãy chọn một người bạn khác trong server.',
+          ephemeral: true
+        });
+      }
+
+      const gameId = `${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const game: CaroGame = {
+        gameId,
+        guildId: interaction.guildId!,
+        playerX: interaction.user.id,
+        playerO: opponent.id,
+        turn: 'X',
+        board: Array(9).fill(null),
+        winner: null
+      };
+      caroGames.set(gameId, game);
+
+      const embed = new EmbedBuilder()
+        .setTitle('⚔️ ĐẤU TRƯỜNG CỜ CARO (TIC-TAC-TOE PVP)')
+        .setDescription(
+          `Trận đấu giữa 2 kỳ thủ:\n` +
+          `• ❌ **Người Thách Đấu:** <@${interaction.user.id}>\n` +
+          `• ⭕ **Người Nhận Lời:** <@${opponent.id}>\n\n` +
+          `👉 **Lượt đi đầu tiên:** <@${interaction.user.id}> (❌)\n` +
+          `Hãy bấm vào ô bàn cờ bên dưới để hạ nước cờ!`
+        )
+        .setColor(0x3498db)
+        .setFooter({ text: 'Aegis Arena • Trận đấu 2 người chơi thật' })
+        .setTimestamp();
+
+      const rows = buildCaroRows(game);
+      await interaction.reply({
+        content: `⚔️ <@${opponent.id}> ơi, bạn vừa nhận được lời thách đấu Cờ Caro từ <@${interaction.user.id}>!`,
+        embeds: [embed],
+        components: rows
+      });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('Mở Bảng Điều Khiển Hướng Dẫn Toàn Diện AegisCore kèm Banner & Profile Chủ'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const bannerUrl = 'https://i.pinimg.com/originals/20/ff/e4/20ffe419796909feca129d6ab0e846ee.gif';
+
+      const embed = new EmbedBuilder()
+        .setTitle('🛡️ TRUNG TÂM ĐIỀU HÀNH AEGISCORE - BẢNG LỆNH TOÀN DIỆN')
+        .setDescription(
+          `Chào mừng **${interaction.user.username}**! AegisCore là tổ hợp bot Discord cao cấp kết hợp **Lá Chắn An Ninh Tối Cực (Anti-Raid / Anti-Nuke)**, **Hệ Thống Âm Nhạc Lavalink Hi-Fi** và **Đấu Trường Mini Games Tương Tác**.\n\n` +
+          `👑 **Chủ sở hữu hệ thống:** <@${OWNER_ID}> (\`ID: ${OWNER_ID}\`)\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+        )
+        .addFields(
+          {
+            name: '🛡️ BẢO MẬT & PHÒNG THỦ AN NINH',
+            value:
+              '• `/antiraid-status`: Kiểm tra radar bảo vệ real-time\n' +
+              '• `/setup-logs`: Tự động tạo kênh riêng tư `#aegis-security-logs`\n' +
+              '• `/lockdown [lock: true/false]`: Khóa/Mở chat khẩn cấp\n' +
+              '• `/purge [amount]`: Xóa tin nhắn hàng loạt\n' +
+              '• ⚡ **Tự Động:** Ban Bot lạ, Ban kẻ nuke kênh/role, Chặn link rác/scam',
+            inline: false
+          },
+          {
+            name: '🎵 ÂM NHẠC HI-FI (LAVALINK HI-RES)',
+            value:
+              '• `/play [query]`: Tìm kiếm & phát nhạc YouTube/SoundCloud/MP3\n' +
+              '• `/pause` & `/resume`: Tạm dừng / Tiếp tục bài hát\n' +
+              '• `/skip` & `/stop`: Bỏ qua bài / Rời phòng voice\n' +
+              '• `/queue`: Xem danh sách bài hát đang chờ\n' +
+              '• `/volume [percent]`: Chỉnh âm lượng Lavalink (1 - 150%)',
+            inline: false
+          },
+          {
+            name: '👑 QUẢN TRỊ SERVER & ĐẶC QUYỀN OWNER',
+            value:
+              '• `/setup-owner-role [name] [color] [target]`: Tạo & gán Role Quản Trị Tối Cao cho Chủ hoặc người khác\n' +
+              '• `/role-give [member] [role]`: Cấp bất kỳ Role nào cho thành viên\n' +
+              '• `/role-take [member] [role]`: Thu hồi Role khỏi thành viên\n' +
+              '• `/delete-afk-channel [channel]`: Xóa vĩnh viễn kênh voice AFK\n' +
+              '• `/kick-afk [channel]`: Dọn dẹp/Kick người treo máy trong phòng AFK',
+            inline: false
+          },
+          {
+            name: '🎮 ĐẤU TRƯỜNG MINI GAMES GIẢI TRÍ',
+            value:
+              '• `/blackjack`: Sòng bạc Xì Dách 21 điểm tương tác nút bấm 🃏\n' +
+              '• `/caro [opponent]`: Thách đấu Cờ Caro 2 người chơi (PVP trực tiếp) ⚔️\n' +
+              '• `/taixiu`: Đổ 3 hột xúc xắc Tài Xỉu may mắn 🎲\n' +
+              '• `/rps`: Quyết đấu Kéo - Búa - Bao ✊✋✌️\n' +
+              '• `/coinflip`: Tung đồng xu may rủi 🪙 (Ngửa/Sấp)',
+            inline: false
+          }
+        )
+        .setImage(bannerUrl)
+        .setColor(0x5865f2)
+        .setFooter({ text: 'AegisCore Suite • Được bảo vệ bởi Chủ Sở Hữu' })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setLabel('👑 Profile Chủ Sở Hữu (Discord Link)')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://discord.com/users/${OWNER_ID}`),
+        new ButtonBuilder()
+          .setCustomId('btn_view_owner_profile')
+          .setLabel('👑 Thẻ Thông Tin Chủ Server')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
     }
   }
 ];
@@ -1145,6 +1535,201 @@ export async function startDiscordBot() {
 
       await interaction.update({ embeds: [embed], components: [] });
       return;
+    }
+
+    // Handle Owner Profile Modal/Embed Button
+    if (interaction.isButton() && interaction.customId === 'btn_view_owner_profile') {
+      let ownerUser: any = null;
+      try {
+        ownerUser = await client.users.fetch(OWNER_ID);
+      } catch {}
+
+      const ownerEmbed = new EmbedBuilder()
+        .setTitle('👑 HỒ SƠ CHỦ SỞ HỮU TỐI CAO (SYSTEM OWNER)')
+        .setDescription(
+          `Thông tin chi tiết về Đấng Sáng Lập & Chủ Quản hệ thống AegisCore:\n\n` +
+          `• **Tên Discord:** ${ownerUser ? `**${ownerUser.tag}**` : `<@${OWNER_ID}>`}\n` +
+          `• **User ID:** \`${OWNER_ID}\`\n` +
+          `• **Vị trí quyền lực:** \`Founder & Supreme Overlord\`\n` +
+          `• **Quyền hạn Bot:** Miễn trừ 100% mọi cơ chế trừng phạt & Toàn quyền điều phối\n` +
+          `• **Trang cá nhân:** [Bấm vào đây để mở Discord Profile](https://discord.com/users/${OWNER_ID})`
+        )
+        .setColor(0xffd700)
+        .setTimestamp();
+
+      if (ownerUser && ownerUser.displayAvatarURL()) {
+        ownerEmbed.setThumbnail(ownerUser.displayAvatarURL());
+      }
+
+      const ownerRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setLabel('👑 Mở Discord Profile Chủ')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://discord.com/users/${OWNER_ID}`)
+      );
+
+      return interaction.reply({ embeds: [ownerEmbed], components: [ownerRow], ephemeral: true });
+    }
+
+    // Handle Blackjack Hit & Stand Buttons
+    if (interaction.isButton() && (interaction.customId.startsWith('bj_hit_') || interaction.customId.startsWith('bj_stand_'))) {
+      const isHit = interaction.customId.startsWith('bj_hit_');
+      const gameUserId = interaction.customId.replace(isHit ? 'bj_hit_' : 'bj_stand_', '');
+
+      if (interaction.user.id !== gameUserId) {
+        return interaction.reply({ content: '❌ Đây là ván bài Xì Dách của người khác. Hãy gõ `/blackjack` để chơi ván riêng của bạn!', ephemeral: true });
+      }
+
+      const game = blackjackGames.get(gameUserId);
+      if (!game || game.state !== 'playing') {
+        return interaction.reply({ content: '❌ Ván bài này đã kết thúc. Hãy gõ `/blackjack` để mở ván mới!', ephemeral: true });
+      }
+
+      if (isHit) {
+        const card = game.deck.pop();
+        if (card) game.playerHand.push(card);
+        const score = calculateHandScore(game.playerHand);
+
+        if (score > 21) {
+          game.state = 'finished';
+          const bustEmbed = new EmbedBuilder()
+            .setTitle('💀 BẠN ĐÃ BỊ QUẮC (>21 ĐIỂM)! NHÀ CÁI THẮNG!')
+            .setDescription(
+              `**Người chơi:** <@${gameUserId}>\n\n` +
+              `• **Bài của bạn:** ${formatHand(game.playerHand)} (Tổng điểm: **${score}** - Quắc)\n` +
+              `• **Bài của Nhà Cái:** ${formatHand(game.dealerHand)} (Điểm: **${calculateHandScore(game.dealerHand)}**)\n\n` +
+              `💥 **Kết quả:** Quá 21 điểm! Bạn đã thua ván cược này.`
+            )
+            .setColor(0xe74c3c)
+            .setTimestamp();
+          return interaction.update({ embeds: [bustEmbed], components: [] });
+        } else if (score === 21) {
+          game.state = 'stand';
+        } else {
+          const continueEmbed = new EmbedBuilder()
+            .setTitle('🃏 SÒNG BẠC BLACKJACK / XÌ DÁCH 21 ĐIỂM')
+            .setDescription(
+              `**Người chơi:** <@${gameUserId}>\n\n` +
+              `• **Bài của bạn:** ${formatHand(game.playerHand)} (Điểm: **${score}**)\n` +
+              `• **Bài của Nhà Cái (Dealer):** ${formatHand(game.dealerHand, true)} (Điểm hiện: **${game.dealerHand[0].weight}**)\n\n` +
+              `👉 Bấm **🃏 Rút Thêm** hoặc **✋ Dằn Bài**:`
+            )
+            .setColor(0xf1c40f)
+            .setTimestamp();
+          return interaction.update({ embeds: [continueEmbed] });
+        }
+      }
+
+      // If stand or reached 21
+      game.state = 'finished';
+      let dealerScore = calculateHandScore(game.dealerHand);
+      while (dealerScore < 17 && game.deck.length > 0) {
+        game.dealerHand.push(game.deck.pop()!);
+        dealerScore = calculateHandScore(game.dealerHand);
+      }
+
+      const finalPlayerScore = calculateHandScore(game.playerHand);
+      let winState = '';
+      let finalColor = 0x3498db;
+
+      if (dealerScore > 21) {
+        winState = '🎉 **NHÀ CÁI ĐÃ BỊ QUẮC (>21)! BẠN ĐÃ THẮNG CUỘC!**';
+        finalColor = 0x2ecc71;
+      } else if (finalPlayerScore > dealerScore) {
+        winState = `🎉 **BẠN ĐÃ CHIẾN THẮNG!** (${finalPlayerScore} điểm > ${dealerScore} điểm của Nhà Cái)`;
+        finalColor = 0x2ecc71;
+      } else if (finalPlayerScore < dealerScore) {
+        winState = `💀 **NHÀ CÁI ĐÃ THẮNG!** (${dealerScore} điểm > ${finalPlayerScore} điểm của bạn)`;
+        finalColor = 0xe74c3c;
+      } else {
+        winState = `🤝 **HÒA TIỀN (PUSH)!** Cả hai bên đều đạt ${finalPlayerScore} điểm.`;
+        finalColor = 0xf39c12;
+      }
+
+      const finalEmbed = new EmbedBuilder()
+        .setTitle('🃏 KẾT QUẢ SO ĐIỂM BLACKJACK / XÌ DÁCH')
+        .setDescription(
+          `**Người chơi:** <@${gameUserId}>\n\n` +
+          `• **Bài của bạn:** ${formatHand(game.playerHand)} (Tổng điểm: **${finalPlayerScore}**)\n` +
+          `• **Bài của Nhà Cái:** ${formatHand(game.dealerHand)} (Tổng điểm: **${dealerScore}**)\n\n` +
+          `${winState}`
+        )
+        .setColor(finalColor)
+        .setTimestamp();
+
+      return interaction.update({ embeds: [finalEmbed], components: [] });
+    }
+
+    // Handle Caro PVP Move Buttons
+    if (interaction.isButton() && interaction.customId.startsWith('caro_')) {
+      const parts = interaction.customId.split('_');
+      const gameId = `${parts[1]}_${parts[2]}`;
+      const cellIndex = parseInt(parts[3], 10);
+
+      const game = caroGames.get(gameId);
+      if (!game) {
+        return interaction.reply({ content: '❌ Ván cờ này không tồn tại hoặc đã hết hạn.', ephemeral: true });
+      }
+
+      if (game.winner !== null) {
+        return interaction.reply({ content: '❌ Ván cờ này đã kết thúc!', ephemeral: true });
+      }
+
+      const currentUserId = game.turn === 'X' ? game.playerX : game.playerO;
+      if (interaction.user.id !== currentUserId) {
+        if (interaction.user.id !== game.playerX && interaction.user.id !== game.playerO) {
+          return interaction.reply({ content: '❌ Bạn là khán giả, không thể can thiệp vào ván cờ này! Hãy gõ `/caro` để tự tạo bàn đấu mới.', ephemeral: true });
+        }
+        return interaction.reply({ content: `⏳ Chưa tới lượt của bạn! Đang là lượt của <@${currentUserId}> (${game.turn === 'X' ? '❌' : '⭕'}).`, ephemeral: true });
+      }
+
+      if (game.board[cellIndex] !== null) {
+        return interaction.reply({ content: '❌ Ô này đã có người đánh!', ephemeral: true });
+      }
+
+      game.board[cellIndex] = game.turn;
+
+      const winResult = checkCaroWinner(game.board);
+      if (winResult) {
+        game.winner = winResult;
+        let desc = '';
+        let color = 0x2ecc71;
+
+        if (winResult === 'tie') {
+          desc = `🤝 **TRẬN ĐẤU BẤT PHÂN THẮNG BẠI! HÒA CỜ!**\nCả 2 kỳ thủ <@${game.playerX}> và <@${game.playerO}> đều thủ thế xuất sắc.`;
+          color = 0xf39c12;
+        } else {
+          const winnerId = winResult === 'X' ? game.playerX : game.playerO;
+          desc = `🏆 **CHIẾN THẮNG TUYỆT ĐỐI!**\nKỳ thủ <@${winnerId}> (${winResult === 'X' ? '❌' : '⭕'}) đã đả bại đối phương với 3 nước cờ liên tiếp!`;
+          color = winResult === 'X' ? 0xe74c3c : 0x3498db;
+        }
+
+        const winEmbed = new EmbedBuilder()
+          .setTitle('⚔️ KẾT QUẢ ĐẤU TRƯỜNG CỜ CARO (PVP)')
+          .setDescription(desc)
+          .setColor(color)
+          .setTimestamp();
+
+        const finalRows = buildCaroRows(game);
+        return interaction.update({ embeds: [winEmbed], components: finalRows });
+      }
+
+      game.turn = game.turn === 'X' ? 'O' : 'X';
+      const nextUserId = game.turn === 'X' ? game.playerX : game.playerO;
+
+      const nextEmbed = new EmbedBuilder()
+        .setTitle('⚔️ ĐẤU TRƯỜNG CỜ CARO (TIC-TAC-TOE PVP)')
+        .setDescription(
+          `Trận đấu giữa 2 kỳ thủ:\n` +
+          `• ❌ **Kỳ thủ X:** <@${game.playerX}>\n` +
+          `• ⭕ **Kỳ thủ O:** <@${game.playerO}>\n\n` +
+          `👉 **Lượt tiếp theo:** <@${nextUserId}> (${game.turn === 'X' ? '❌' : '⭕'})`
+        )
+        .setColor(0x3498db)
+        .setTimestamp();
+
+      const rows = buildCaroRows(game);
+      return interaction.update({ embeds: [nextEmbed], components: rows });
     }
   });
 
