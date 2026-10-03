@@ -1228,6 +1228,7 @@ const slashCommands = [
           {
             name: '🛡️ BẢO MẬT & PHÒNG THỦ AN NINH',
             value:
+              '• `/whitelist [add/remove/list]`: Quản lý danh sách thành viên miễn trừ kiểm duyệt\n' +
               '• `/antiraid-status`: Kiểm tra radar bảo vệ real-time\n' +
               '• `/setup-logs`: Tự động tạo kênh riêng tư `#aegis-security-logs`\n' +
               '• `/lockdown [lock: true/false]`: Khóa/Mở chat khẩn cấp\n' +
@@ -1246,8 +1247,10 @@ const slashCommands = [
             inline: false
           },
           {
-            name: '👑 QUẢN TRỊ SERVER & ĐẶC QUYỀN OWNER',
+            name: '👑 QUẢN TRỊ SERVER & TRA CỨU HỒ SƠ',
             value:
+              '• `/serverinfo`: Xem hồ sơ, thống kê thành viên, kênh & cấp độ boost của server\n' +
+              '• `/userinfo [user]`: Tra cứu hồ sơ, avatar, ngày tạo nick, ngày vào server & role\n' +
               '• `/setup-owner-role [name] [color] [target]`: Tạo & gán Role Quản Trị Tối Cao cho Chủ hoặc người khác\n' +
               '• `/role-give [member] [role]`: Cấp bất kỳ Role nào cho thành viên\n' +
               '• `/role-take [member] [role]`: Thu hồi Role khỏi thành viên\n' +
@@ -1284,8 +1287,272 @@ const slashCommands = [
 
       await interaction.reply({ embeds: [embed], components: [row] });
     }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('whitelist')
+      .setDescription('Quản lý danh sách Whitelist an ninh (Miễn trừ kiểm duyệt Anti-Raid/Spam)')
+      .addSubcommand(sub =>
+        sub.setName('add')
+          .setDescription('Thêm người dùng vào danh sách bảo hộ Whitelist')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('Chọn thành viên cần Whitelist')
+              .setRequired(true)
+          )
+          .addStringOption(opt =>
+            opt.setName('reason')
+              .setDescription('Lý do bảo hộ')
+              .setRequired(false)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName('remove')
+          .setDescription('Xóa người dùng khỏi danh sách bảo hộ Whitelist')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('Chọn thành viên cần gỡ Whitelist')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(sub =>
+        sub.setName('list')
+          .setDescription('Xem toàn bộ danh sách thành viên đang được Whitelist')
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === interaction.guild!.ownerId;
+      const isAdmin = interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator);
+
+      if (!isOwner && !isAdmin) {
+        return interaction.reply({
+          content: '❌ Chỉ Chủ Sở Hữu (Server Owner) hoặc Administrator mới có quyền quản lý Whitelist an ninh.',
+          ephemeral: true
+        });
+      }
+
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === 'add') {
+        const target = interaction.options.getUser('user', true);
+        const reason = interaction.options.getString('reason') || 'Được phê duyệt bởi Ban Quản Trị';
+
+        whitelistedUsers.add(target.id);
+
+        const embed = new EmbedBuilder()
+          .setTitle('🛡️ ĐÃ THÊM VÀO WHITELIST AN NINH THÀNH CÔNG!')
+          .setDescription(
+            `Người dùng **${target.tag}** đã được đưa vào danh sách **Bảo Hộ Tối Cao (Whitelist)**.\n\n` +
+            `• **Đối tượng:** <@${target.id}> (\`${target.id}\`)\n` +
+            `• **Đặc quyền:** Miễn trừ 100% kiểm duyệt Anti-Raid, Anti-Spam & Mass Mention\n` +
+            `• **Lý do:** \`${reason}\`\n` +
+            `• **Người phê duyệt:** <@${interaction.user.id}>`
+          )
+          .setColor(0x2ecc71)
+          .setThumbnail(target.displayAvatarURL())
+          .setTimestamp();
+
+        return interaction.reply({ embeds: [embed] });
+      }
+
+      if (sub === 'remove') {
+        const target = interaction.options.getUser('user', true);
+
+        if (target.id === OWNER_ID || target.id === interaction.guild!.ownerId) {
+          return interaction.reply({
+            content: '❌ Không thể gỡ Chủ Sở Hữu khỏi Whitelist an ninh!',
+            ephemeral: true
+          });
+        }
+
+        if (!whitelistedUsers.has(target.id)) {
+          return interaction.reply({
+            content: `⚠️ Người dùng <@${target.id}> hiện không có trong danh sách Whitelist.`,
+            ephemeral: true
+          });
+        }
+
+        whitelistedUsers.delete(target.id);
+
+        const embed = new EmbedBuilder()
+          .setTitle('🗑️ ĐÃ GỠ KHỎI WHITELIST AN NINH!')
+          .setDescription(`Đã xóa <@${target.id}> (\`${target.tag}\`) khỏi danh sách Whitelist. Người này sẽ chịu sự giám sát an ninh bình thường.`)
+          .setColor(0xe74c3c)
+          .setTimestamp();
+
+        return interaction.reply({ embeds: [embed] });
+      }
+
+      if (sub === 'list') {
+        const list = Array.from(whitelistedUsers);
+        const embed = new EmbedBuilder()
+          .setTitle('🛡️ DANH SÁCH WHITELIST BẢO HỘ AN NINH')
+          .setDescription(
+            `Tất cả thành viên trong danh sách dưới đây được miễn trừ kiểm duyệt tự động:\n\n` +
+            list.map((id, idx) => `${idx + 1}. <@${id}> (\`${id}\`)${id === OWNER_ID ? ' 👑 **(Founder)**' : ''}`).join('\n')
+          )
+          .setColor(0x3498db)
+          .setFooter({ text: `Tổng cộng: ${list.length} đối tượng được bảo hộ` })
+          .setTimestamp();
+
+        return interaction.reply({ embeds: [embed] });
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('serverinfo')
+      .setDescription('Xem toàn bộ hồ sơ thống kê chi tiết của Máy Chủ'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const guild = interaction.guild!;
+      await guild.members.fetch().catch(() => null);
+
+      const totalMembers = guild.memberCount;
+      const humans = guild.members.cache.filter(m => !m.user.bot).size;
+      const bots = guild.members.cache.filter(m => m.user.bot).size;
+
+      const textChannels = guild.channels.cache.filter(c => c.type === ChannelType.GuildText).size;
+      const voiceChannels = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).size;
+      const categories = guild.channels.cache.filter(c => c.type === ChannelType.GuildCategory).size;
+
+      const boostTier = guild.premiumTier;
+      const boostCount = guild.premiumSubscriptionCount || 0;
+
+      const embed = new EmbedBuilder()
+        .setTitle(`🏛️ THÔNG TIN MÁY CHỦ: ${guild.name}`)
+        .setDescription(guild.description || 'Máy chủ được bảo hộ bởi hệ thống AegisCore Shield.')
+        .addFields(
+          {
+            name: '👑 Chủ Sở Hữu (Owner)',
+            value: `<@${guild.ownerId}> (\`${guild.ownerId}\`)`,
+            inline: true
+          },
+          {
+            name: '🆔 Server ID',
+            value: `\`${guild.id}\``,
+            inline: true
+          },
+          {
+            name: '📅 Ngày Thành Lập',
+            value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:F>\n(<t:${Math.floor(guild.createdTimestamp / 1000)}:R>)`,
+            inline: true
+          },
+          {
+            name: `👥 Thành Viên (${totalMembers})`,
+            value: `• Người thật: **${humans}**\n• Bot hệ thống: **${bots}**`,
+            inline: true
+          },
+          {
+            name: `📁 Kênh (${guild.channels.cache.size})`,
+            value: `• Chat: **${textChannels}**\n• Voice: **${voiceChannels}**\n• Danh mục: **${categories}**`,
+            inline: true
+          },
+          {
+            name: '💎 Server Boost',
+            value: `• Cấp độ: **Tier ${boostTier}**\n• Số Boost: **${boostCount} lần**`,
+            inline: true
+          },
+          {
+            name: '🏷️ Vai Trò & Biểu Cảm',
+            value: `• Vai trò: **${guild.roles.cache.size} Roles**\n• Emojis: **${guild.emojis.cache.size}**`,
+            inline: true
+          },
+          {
+            name: '🛡️ Cấp Độ Bảo Mật',
+            value: `\`Level: ${guild.verificationLevel}\``,
+            inline: true
+          }
+        )
+        .setColor(0x5865f2)
+        .setTimestamp();
+
+      if (guild.iconURL()) {
+        embed.setThumbnail(guild.iconURL({ size: 1024 })!);
+      }
+      if (guild.bannerURL()) {
+        embed.setImage(guild.bannerURL({ size: 1024 })!);
+      }
+
+      await interaction.reply({ embeds: [embed] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('userinfo')
+      .setDescription('Xem hồ sơ chi tiết, ngày tạo tài khoản, vai trò và quyền hạn của người dùng')
+      .addUserOption(opt =>
+        opt.setName('user')
+          .setDescription('Chọn thành viên cần xem thông tin (để trống nếu xem chính bạn)')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const targetUser = interaction.options.getUser('user') || interaction.user;
+      const guild = interaction.guild!;
+      const member = await guild.members.fetch(targetUser.id).catch(() => null);
+
+      const isWhitelisted = whitelistedUsers.has(targetUser.id) || targetUser.id === OWNER_ID;
+      const isOwner = targetUser.id === guild.ownerId || targetUser.id === OWNER_ID;
+
+      const embed = new EmbedBuilder()
+        .setTitle(`👤 HỒ SƠ NGƯỜI DÙNG: ${targetUser.tag}`)
+        .setDescription(
+          `Thông tin tra cứu tài khoản trên hệ thống AegisCore:\n\n` +
+          `• **Tên hiển thị:** **${targetUser.globalName || targetUser.username}**\n` +
+          `• **User ID:** \`${targetUser.id}\`\n` +
+          `• **Loại tài khoản:** ${targetUser.bot ? '🤖 Bot' : '👤 Người dùng'}\n` +
+          `• **Trạng thái An Ninh:** ${isOwner ? '👑 **CHỦ SỞ HỮU TỐI CAO**' : isWhitelisted ? '🛡️ **ĐƯỢC BẢO HỘ (WHITELIST)**' : '🟢 Thành viên bình thường'}`
+        )
+        .addFields(
+          {
+            name: '📅 Ngày Tạo Tài Khoản Discord',
+            value: `<t:${Math.floor(targetUser.createdTimestamp / 1000)}:F>\n(<t:${Math.floor(targetUser.createdTimestamp / 1000)}:R>)`,
+            inline: true
+          }
+        )
+        .setColor(isOwner ? 0xffd700 : isWhitelisted ? 0x2ecc71 : 0x5865f2)
+        .setThumbnail(targetUser.displayAvatarURL({ size: 1024 }))
+        .setTimestamp();
+
+      if (member) {
+        const joinedTimestamp = member.joinedTimestamp ? Math.floor(member.joinedTimestamp / 1000) : null;
+        if (joinedTimestamp) {
+          embed.addFields({
+            name: '📥 Ngày Gia Nhập Server',
+            value: `<t:${joinedTimestamp}:F>\n(<t:${joinedTimestamp}:R>)`,
+            inline: true
+          });
+        }
+
+        const roles = member.roles.cache
+          .filter(r => r.id !== guild.roles.everyone.id)
+          .sort((a, b) => b.position - a.position)
+          .map(r => `<@&${r.id}>`);
+
+        embed.addFields(
+          {
+            name: `🏷️ Vai Trò (${roles.length})`,
+            value: roles.length > 0 ? (roles.length > 10 ? `${roles.slice(0, 10).join(', ')}... (+${roles.length - 10})` : roles.join(', ')) : 'Không có vai trò nào',
+            inline: false
+          },
+          {
+            name: '⭐ Vai Trò Cao Nhất',
+            value: member.roles.highest ? `<@&${member.roles.highest.id}>` : 'None',
+            inline: true
+          },
+          {
+            name: '🔑 Quyền Quản Trị',
+            value: member.permissions.has(PermissionsBitField.Flags.Administrator) ? '✅ Toàn Quyền Administrator' : '❌ Không có quyền Admin',
+            inline: true
+          }
+        );
+      }
+
+      await interaction.reply({ embeds: [embed] });
+    }
   }
 ];
+
+// Whitelist & Security State
+export const whitelistedUsers = new Set<string>([OWNER_ID]);
 
 // Anti-Spam sliding window tracker
 const userMsgHistory = new Map<string, number[]>();
@@ -1763,7 +2030,7 @@ export async function startDiscordBot() {
   // Ruthless Anti-Raid, Rogue Bot Auto-Ban & Message Cleaner
   client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || message.author.id === client.user?.id) return;
-    if (message.author.id === OWNER_ID) return; // Whitelist Owner
+    if (message.author.id === OWNER_ID || whitelistedUsers.has(message.author.id)) return; // Whitelist Protected
 
     const content = message.content || '';
     const isBot = message.author.bot;
@@ -1892,8 +2159,8 @@ export async function startDiscordBot() {
       const entry = auditLogs?.entries.first();
       const inviter = entry?.executor;
 
-      // If invited by someone who is NOT the Owner and NOT the Bot itself
-      if (inviter && inviter.id !== OWNER_ID && inviter.id !== client.user?.id) {
+      // If invited by someone who is NOT the Owner, NOT Whitelisted, and NOT the Bot itself
+      if (inviter && inviter.id !== OWNER_ID && !whitelistedUsers.has(inviter.id) && inviter.id !== client.user?.id) {
         // BAN THE UNAPPROVED BOT IMMEDIATELY
         await member.ban({
           reason: `[Aegis Anti-Bot] Bot lạ được mời trái phép bởi kẻ không có thẩm quyền (${inviter.tag})`
@@ -1937,7 +2204,7 @@ export async function startDiscordBot() {
       const entry = auditLogs?.entries.first();
       const nuker = entry?.executor;
 
-      if (nuker && nuker.id !== OWNER_ID && nuker.id !== client.user?.id) {
+      if (nuker && nuker.id !== OWNER_ID && !whitelistedUsers.has(nuker.id) && nuker.id !== client.user?.id) {
         // BAN NUKER IMMEDIATELY
         await guild.members.ban(nuker.id, {
           reason: `[Aegis Anti-Nuke] Cố tình xóa kênh: ${(channel as any).name}`
@@ -1981,7 +2248,7 @@ export async function startDiscordBot() {
       const entry = auditLogs?.entries.first();
       const nuker = entry?.executor;
 
-      if (nuker && nuker.id !== OWNER_ID && nuker.id !== client.user?.id) {
+      if (nuker && nuker.id !== OWNER_ID && !whitelistedUsers.has(nuker.id) && nuker.id !== client.user?.id) {
         await guild.members.ban(nuker.id, {
           reason: `[Aegis Anti-Nuke] Cố tình xóa vai trò (Role): ${role.name}`
         }).catch(() => null);
