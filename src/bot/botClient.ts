@@ -12,7 +12,10 @@ import {
   TextChannel,
   EmbedBuilder,
   ButtonInteraction,
-  GuildMember
+  GuildMember,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
 } from 'discord.js';
 import { Shoukaku, Connectors } from 'shoukaku';
 
@@ -80,8 +83,358 @@ shoukaku.on('disconnect', (name, count) => {
   console.warn(`[Lavalink Disconnected] Node ${name} reconnecting (#${count})`);
 });
 
+// Lavalink Music Queue System
+interface TrackItem {
+  encoded: string;
+  info: {
+    title: string;
+    author: string;
+    length: number;
+    uri: string;
+    artworkUrl?: string;
+  };
+  requester: { id: string; username: string };
+}
+
+interface GuildQueue {
+  guildId: string;
+  voiceChannelId: string;
+  textChannelId: string;
+  player: any;
+  tracks: TrackItem[];
+  currentTrack: TrackItem | null;
+  loopMode: 'off' | 'track' | 'queue';
+  volume: number;
+  nowPlayingMessageId?: string;
+}
+
+export const musicQueues = new Map<string, GuildQueue>();
+
+function formatDuration(ms: number) {
+  const totalSecs = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+export function buildMusicMessagePayload(queue: GuildQueue, isPlaying: boolean) {
+  const track = queue.currentTrack;
+  if (!track) return null;
+
+  const embed = new EmbedBuilder()
+    .setAuthor({ name: '🎵 ĐANG PHÁT NHẠC (LAVALINK HI-FI)', iconURL: client.user?.displayAvatarURL() })
+    .setTitle(track.info.title)
+    .setURL(track.info.uri)
+    .setDescription(
+      `**Tác giả:** ${track.info.author}\n` +
+      `**Thời lượng:** \`${formatDuration(track.info.length)}\`\n` +
+      `**Yêu cầu bởi:** <@${track.requester.id}>\n` +
+      `**Âm lượng:** \`${queue.volume}%\` · **Chế độ lặp:** \`${queue.loopMode.toUpperCase()}\`\n` +
+      `**Hàng chờ:** \`${queue.tracks.length}\` bài tiếp theo`
+    )
+    .setColor(0x5865f2)
+    .setTimestamp();
+
+  if (track.info.artworkUrl) {
+    embed.setThumbnail(track.info.artworkUrl);
+  }
+
+  const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('music_playpause')
+      .setLabel(isPlaying ? '⏸ Tạm dừng' : '▶ Tiếp tục')
+      .setStyle(isPlaying ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('music_skip')
+      .setLabel('⏭ Bỏ qua')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('music_loop')
+      .setLabel(`🔁 ${queue.loopMode.toUpperCase()}`)
+      .setStyle(queue.loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('music_stop')
+      .setLabel('⏹ Dừng')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('music_voldown')
+      .setLabel('🔉 Giảm Vol')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('music_volup')
+      .setLabel('🔊 Tăng Vol')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
+async function playNext(guildId: string) {
+  const queue = musicQueues.get(guildId);
+  if (!queue) return;
+
+  if (queue.tracks.length === 0) {
+    queue.currentTrack = null;
+    const channel = client.channels.cache.get(queue.textChannelId) as TextChannel;
+    if (channel) {
+      channel.send('📭 Hàng chờ đã phát xong tất cả các bài hát.');
+    }
+    return;
+  }
+
+  const nextTrack = queue.tracks.shift()!;
+  queue.currentTrack = nextTrack;
+
+  try {
+    await queue.player.playTrack({ track: { encoded: nextTrack.encoded } });
+    await queue.player.setGlobalVolume(queue.volume);
+
+    const payload = buildMusicMessagePayload(queue, true);
+    if (payload) {
+      const channel = client.channels.cache.get(queue.textChannelId) as TextChannel;
+      if (channel) {
+        const msg = await channel.send(payload);
+        queue.nowPlayingMessageId = msg.id;
+      }
+    }
+  } catch (err: any) {
+    console.error(`[Music Error] Play track error in guild ${guildId}:`, err);
+  }
+}
+
 // Slash Commands
 const slashCommands = [
+  {
+    data: new SlashCommandBuilder()
+      .setName('play')
+      .setDescription('Tìm và phát nhạc chất lượng cao từ YouTube/SoundCloud/MP3')
+      .addStringOption(opt =>
+        opt.setName('query')
+          .setDescription('Tên bài hát hoặc đường link (YouTube, SoundCloud, MP3...)')
+          .setRequired(true)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const member = interaction.member as GuildMember;
+      const voiceChannel = member.voice.channel;
+      if (!voiceChannel) {
+        return interaction.reply({
+          content: '❌ Bạn cần tham gia vào một kênh thoại (Voice Channel) trước khi dùng lệnh `/play`!',
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply();
+      const query = interaction.options.getString('query', true);
+      const guildId = interaction.guildId!;
+
+      const node = shoukaku.getIdealNode();
+      if (!node) {
+        return interaction.editReply('❌ Không tìm thấy cụm máy chủ âm thanh Lavalink nào sẵn sàng. Vui lòng thử lại sau vài giây.');
+      }
+
+      try {
+        let player = shoukaku.players.get(guildId);
+        if (!player) {
+          player = await shoukaku.joinVoiceChannel({
+            guildId,
+            channelId: voiceChannel.id,
+            shardId: 0,
+            deaf: true
+          });
+
+          player.on('end', async () => {
+            const currentQueue = musicQueues.get(guildId);
+            if (!currentQueue) return;
+            if (currentQueue.loopMode === 'track' && currentQueue.currentTrack) {
+              await currentQueue.player.playTrack({ track: { encoded: currentQueue.currentTrack.encoded } });
+            } else if (currentQueue.loopMode === 'queue' && currentQueue.currentTrack) {
+              currentQueue.tracks.push(currentQueue.currentTrack);
+              await playNext(guildId);
+            } else {
+              await playNext(guildId);
+            }
+          });
+
+          player.on('exception', (err: any) => {
+            console.error('[Lavalink Player Exception]:', err);
+          });
+        }
+
+        let queue = musicQueues.get(guildId);
+        if (!queue) {
+          queue = {
+            guildId,
+            voiceChannelId: voiceChannel.id,
+            textChannelId: interaction.channelId,
+            player,
+            tracks: [],
+            currentTrack: null,
+            loopMode: 'off',
+            volume: 80
+          };
+          musicQueues.set(guildId, queue);
+        }
+
+        const isUrl = /^https?:\/\//i.test(query);
+        const searchInput = isUrl ? query : `ytsearch:${query}`;
+        const result = await node.rest.resolve(searchInput);
+
+        if (!result || !result.data) {
+          return interaction.editReply(`❌ Không tìm thấy bài hát nào với từ khóa: \`${query}\``);
+        }
+
+        let addedTrack: any = null;
+        if (result.loadType === 'track') {
+          addedTrack = result.data;
+        } else if (result.loadType === 'playlist') {
+          const playlist = result.data as any;
+          if (playlist.tracks && playlist.tracks.length > 0) {
+            playlist.tracks.forEach((t: any) => {
+              queue!.tracks.push({
+                encoded: t.encoded,
+                info: t.info,
+                requester: { id: interaction.user.id, username: interaction.user.username }
+              });
+            });
+            if (!queue.currentTrack) {
+              await playNext(guildId);
+            }
+            return interaction.editReply(`✅ Đã thêm playlist **${playlist.info.name}** (${playlist.tracks.length} bài) vào hàng chờ!`);
+          }
+        } else if (result.loadType === 'search') {
+          const searchData = result.data as any[];
+          if (searchData.length > 0) {
+            addedTrack = searchData[0];
+          }
+        }
+
+        if (!addedTrack) {
+          return interaction.editReply('❌ Không thể trích xuất track âm thanh từ nguồn này.');
+        }
+
+        const trackItem: TrackItem = {
+          encoded: addedTrack.encoded,
+          info: addedTrack.info,
+          requester: { id: interaction.user.id, username: interaction.user.username }
+        };
+
+        if (!queue.currentTrack) {
+          queue.tracks.push(trackItem);
+          await playNext(guildId);
+          await interaction.editReply(`🎶 Bắt đầu phát: **${trackItem.info.title}**`);
+        } else {
+          queue.tracks.push(trackItem);
+          await interaction.editReply(`➕ Đã thêm vào hàng chờ: **${trackItem.info.title}** (Vị trí #${queue.tracks.length})`);
+        }
+      } catch (err: any) {
+        console.error('[Music Play Error]:', err);
+        await interaction.editReply(`❌ Lỗi phát nhạc: ${err.message}`);
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('skip')
+      .setDescription('Bỏ qua bài hát đang phát'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const queue = musicQueues.get(interaction.guildId!);
+      if (!queue || !queue.currentTrack) {
+        return interaction.reply({ content: '❌ Không có bài hát nào đang phát để bỏ qua.', ephemeral: true });
+      }
+      await queue.player.stopTrack();
+      await interaction.reply({ content: '⏭️ Đã bỏ qua bài hát hiện tại!' });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('stop')
+      .setDescription('Dừng phát nhạc, xóa hàng chờ và ngắt kết nối voice'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const queue = musicQueues.get(interaction.guildId!);
+      if (queue) {
+        queue.tracks = [];
+        queue.currentTrack = null;
+        await queue.player.stopTrack();
+        shoukaku.leaveVoiceChannel(interaction.guildId!);
+        musicQueues.delete(interaction.guildId!);
+      }
+      await interaction.reply({ content: '⏹️ Đã dừng phát nhạc và rời kênh voice.' });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('loop')
+      .setDescription('Cài đặt chế độ lặp lại')
+      .addStringOption(opt =>
+        opt.setName('mode')
+          .setDescription('Chế độ lặp')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Tắt lặp (Off)', value: 'off' },
+            { name: 'Lặp 1 bài (Track)', value: 'track' },
+            { name: 'Lặp hàng chờ (Queue)', value: 'queue' }
+          )
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const queue = musicQueues.get(interaction.guildId!);
+      if (!queue) {
+        return interaction.reply({ content: '❌ Không có phiên phát nhạc nào đang chạy.', ephemeral: true });
+      }
+      const mode = interaction.options.getString('mode', true) as any;
+      queue.loopMode = mode;
+      await interaction.reply({ content: `🔁 Đã đổi chế độ lặp lại sang: **${mode.toUpperCase()}**` });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('queue')
+      .setDescription('Xem danh sách các bài hát trong hàng chờ'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const queue = musicQueues.get(interaction.guildId!);
+      if (!queue || !queue.currentTrack) {
+        return interaction.reply({ content: '📭 Hàng chờ hiện đang trống.', ephemeral: true });
+      }
+
+      const list = queue.tracks
+        .slice(0, 10)
+        .map((t, i) => `${i + 1}. **${t.info.title}** (\`${formatDuration(t.info.length)}\`) - <@${t.requester.id}>`)
+        .join('\n') || 'Không có bài chờ tiếp theo.';
+
+      const embed = new EmbedBuilder()
+        .setTitle('📜 DANH SÁCH BÀI HÁT ĐANG CHỜ')
+        .setDescription(`**Đang phát:** ${queue.currentTrack.info.title}\n\n**Tiếp theo:**\n${list}`)
+        .setColor(0x5865f2)
+        .setFooter({ text: `Tổng cộng: ${queue.tracks.length + 1} bài` });
+
+      await interaction.reply({ embeds: [embed] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('volume')
+      .setDescription('Điều chỉnh âm lượng Lavalink (1 - 150%)')
+      .addIntegerOption(opt =>
+        opt.setName('percent')
+          .setDescription('Mức âm lượng phần trăm (1 - 150)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(150)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const vol = interaction.options.getInteger('percent', true);
+      const queue = musicQueues.get(interaction.guildId!);
+      if (queue) {
+        queue.volume = vol;
+        await queue.player.setGlobalVolume(vol);
+        await interaction.reply({ content: `🔊 Đã chỉnh âm lượng Lavalink sang: **${vol}%**` });
+      } else {
+        await interaction.reply({ content: `🔊 Mức âm lượng đã lưu: **${vol}%** (Chưa có bài nào đang phát).`, ephemeral: true });
+      }
+    }
+  },
   {
     data: new SlashCommandBuilder()
       .setName('setup-logs')
@@ -218,28 +571,6 @@ const slashCommands = [
       await channel.bulkDelete(messages, true);
       await interaction.reply({ content: `🧹 Đã dọn dẹp thành công ${messages.size} tin nhắn.`, ephemeral: true });
     }
-  },
-  {
-    data: new SlashCommandBuilder()
-      .setName('volume')
-      .setDescription('Điều chỉnh âm lượng Lavalink (1 - 150%)')
-      .addIntegerOption(opt =>
-        opt.setName('percent')
-          .setDescription('Mức âm lượng phần trăm (1 - 150)')
-          .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(150)
-      ),
-    async execute(interaction: ChatInputCommandInteraction) {
-      const vol = interaction.options.getInteger('percent', true);
-      const player = shoukaku.players.get(interaction.guildId!);
-      if (player) {
-        await player.setGlobalVolume(vol);
-        await interaction.reply({ content: `🔊 Đã chỉnh âm lượng Lavalink sang: **${vol}%**`, ephemeral: true });
-      } else {
-        await interaction.reply({ content: `🔊 Mức âm lượng đã lưu: **${vol}%** (Chưa có bài nào đang phát).`, ephemeral: true });
-      }
-    }
   }
 ];
 
@@ -285,20 +616,76 @@ export async function startDiscordBot() {
     }
   });
 
-  // Slash command handler
+  // Interaction handler (Slash Commands & Music Buttons)
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    const cmd = slashCommands.find(c => c.data.name === interaction.commandName);
-    if (!cmd) return;
-    try {
-      await cmd.execute(interaction);
-    } catch (err: any) {
-      console.error(`Command error [${interaction.commandName}]:`, err);
-      const replyFn = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
-      await interaction[replyFn]({
-        content: `⚠️ Lỗi thực thi lệnh: ${err.message || 'Lỗi không xác định.'}`,
-        ephemeral: true
-      });
+    // Handle Slash Commands
+    if (interaction.isChatInputCommand()) {
+      const cmd = slashCommands.find(c => c.data.name === interaction.commandName);
+      if (!cmd) return;
+      try {
+        await cmd.execute(interaction);
+      } catch (err: any) {
+        console.error(`Command error [${interaction.commandName}]:`, err);
+        const replyFn = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
+        await interaction[replyFn]({
+          content: `⚠️ Lỗi thực thi lệnh: ${err.message || 'Lỗi không xác định.'}`,
+          ephemeral: true
+        });
+      }
+      return;
+    }
+
+    // Handle Music Control Buttons
+    if (interaction.isButton() && interaction.customId.startsWith('music_')) {
+      const guildId = interaction.guildId;
+      if (!guildId) return;
+
+      const queue = musicQueues.get(guildId);
+      if (!queue || !queue.currentTrack) {
+        return interaction.reply({ content: '❌ Không có phiên phát nhạc nào đang chạy.', ephemeral: true });
+      }
+
+      const action = interaction.customId;
+
+      if (action === 'music_playpause') {
+        const isCurrentlyPaused = queue.player.paused;
+        await queue.player.setPaused(!isCurrentlyPaused);
+        const payload = buildMusicMessagePayload(queue, isCurrentlyPaused);
+        if (payload) {
+          await interaction.update(payload as any);
+        }
+      } else if (action === 'music_skip') {
+        await interaction.deferUpdate();
+        await queue.player.stopTrack();
+      } else if (action === 'music_loop') {
+        const nextMode = queue.loopMode === 'off' ? 'track' : queue.loopMode === 'track' ? 'queue' : 'off';
+        queue.loopMode = nextMode;
+        const payload = buildMusicMessagePayload(queue, !queue.player.paused);
+        if (payload) {
+          await interaction.update(payload as any);
+        }
+      } else if (action === 'music_stop') {
+        queue.tracks = [];
+        queue.currentTrack = null;
+        await queue.player.stopTrack();
+        shoukaku.leaveVoiceChannel(guildId);
+        musicQueues.delete(guildId);
+        await interaction.reply({ content: '⏹️ Đã dừng phát nhạc và rời kênh voice.', ephemeral: true });
+      } else if (action === 'music_voldown') {
+        queue.volume = Math.max(0, queue.volume - 10);
+        await queue.player.setGlobalVolume(queue.volume);
+        const payload = buildMusicMessagePayload(queue, !queue.player.paused);
+        if (payload) {
+          await interaction.update(payload as any);
+        }
+      } else if (action === 'music_volup') {
+        queue.volume = Math.min(150, queue.volume + 10);
+        await queue.player.setGlobalVolume(queue.volume);
+        const payload = buildMusicMessagePayload(queue, !queue.player.paused);
+        if (payload) {
+          await interaction.update(payload as any);
+        }
+      }
     }
   });
 
