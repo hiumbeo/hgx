@@ -106,9 +106,18 @@ interface GuildQueue {
   loopMode: 'off' | 'track' | 'queue';
   volume: number;
   nowPlayingMessageId?: string;
+  isProcessing?: boolean;
 }
 
 export const musicQueues = new Map<string, GuildQueue>();
+
+// Process Anti-Crash Guards
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[Anti-Crash] Unhandled Rejection prevented crash:', reason?.message || reason);
+});
+process.on('uncaughtException', (err: any) => {
+  console.error('[Anti-Crash] Uncaught Exception prevented crash:', err?.message || err);
+});
 
 function formatDuration(ms: number) {
   const totalSecs = Math.floor(ms / 1000);
@@ -174,34 +183,43 @@ export function buildMusicMessagePayload(queue: GuildQueue, isPlaying: boolean) 
 
 async function playNext(guildId: string) {
   const queue = musicQueues.get(guildId);
-  if (!queue) return;
+  if (!queue || queue.isProcessing) return;
 
-  if (queue.tracks.length === 0) {
-    queue.currentTrack = null;
-    const channel = client.channels.cache.get(queue.textChannelId) as TextChannel;
-    if (channel) {
-      channel.send('📭 Hàng chờ đã phát xong tất cả các bài hát.');
-    }
-    return;
-  }
-
-  const nextTrack = queue.tracks.shift()!;
-  queue.currentTrack = nextTrack;
-
+  queue.isProcessing = true;
   try {
-    await queue.player.playTrack({ track: { encoded: nextTrack.encoded } });
-    await queue.player.setGlobalVolume(queue.volume);
-
-    const payload = buildMusicMessagePayload(queue, true);
-    if (payload) {
-      const channel = client.channels.cache.get(queue.textChannelId) as TextChannel;
-      if (channel) {
-        const msg = await channel.send(payload);
-        queue.nowPlayingMessageId = msg.id;
-      }
+    if (queue.tracks.length === 0) {
+      queue.currentTrack = null;
+      try {
+        const channel = client.channels.cache.get(queue.textChannelId) as TextChannel;
+        if (channel) {
+          await channel.send('📭 Hàng chờ đã phát xong tất cả các bài hát.').catch(() => null);
+        }
+      } catch {}
+      return;
     }
-  } catch (err: any) {
-    console.error(`[Music Error] Play track error in guild ${guildId}:`, err);
+
+    const nextTrack = queue.tracks.shift()!;
+    queue.currentTrack = nextTrack;
+
+    try {
+      await queue.player.playTrack({ track: { encoded: nextTrack.encoded } });
+      await queue.player.setGlobalVolume(queue.volume);
+
+      const payload = buildMusicMessagePayload(queue, true);
+      if (payload) {
+        const channel = client.channels.cache.get(queue.textChannelId) as TextChannel;
+        if (channel) {
+          const msg = await channel.send(payload).catch(() => null);
+          if (msg) queue.nowPlayingMessageId = msg.id;
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Music Error] Play track error in guild ${guildId}:`, err?.message || err);
+      // Auto advance to next song if this track was broken
+      setTimeout(() => playNext(guildId), 1500);
+    }
+  } finally {
+    queue.isProcessing = false;
   }
 }
 
@@ -245,21 +263,40 @@ const slashCommands = [
             deaf: true
           });
 
-          player.on('end', async () => {
+          player.on('end', async (data: any) => {
+            // CRITICAL: Do NOT advance queue if track was replaced, stopped or cleaned up
+            if (data && (data.reason === 'replaced' || data.reason === 'stopped' || data.reason === 'cleanup')) {
+              return;
+            }
+
             const currentQueue = musicQueues.get(guildId);
             if (!currentQueue) return;
-            if (currentQueue.loopMode === 'track' && currentQueue.currentTrack) {
-              await currentQueue.player.playTrack({ track: { encoded: currentQueue.currentTrack.encoded } });
-            } else if (currentQueue.loopMode === 'queue' && currentQueue.currentTrack) {
-              currentQueue.tracks.push(currentQueue.currentTrack);
-              await playNext(guildId);
-            } else {
-              await playNext(guildId);
+
+            try {
+              if (currentQueue.loopMode === 'track' && currentQueue.currentTrack) {
+                await currentQueue.player.playTrack({ track: { encoded: currentQueue.currentTrack.encoded } }).catch(() => null);
+              } else if (currentQueue.loopMode === 'queue' && currentQueue.currentTrack) {
+                currentQueue.tracks.push(currentQueue.currentTrack);
+                await playNext(guildId);
+              } else {
+                await playNext(guildId);
+              }
+            } catch (err: any) {
+              console.error('[Track Transition Error]:', err?.message || err);
             }
           });
 
+          player.on('stuck', () => {
+            console.warn(`[Lavalink Stuck] Track stuck in guild ${guildId}, advancing...`);
+            playNext(guildId);
+          });
+
+          player.on('closed', () => {
+            console.warn(`[Lavalink Closed] Voice connection closed in guild ${guildId}`);
+          });
+
           player.on('exception', (err: any) => {
-            console.error('[Lavalink Player Exception]:', err);
+            console.error('[Lavalink Player Exception]:', err?.message || err);
           });
         }
 

@@ -10,6 +10,14 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Top-Level Process Anti-Crash Guards
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[Anti-Crash Server] Unhandled Rejection:', reason?.message || reason);
+});
+process.on('uncaughtException', (err: any) => {
+  console.error('[Anti-Crash Server] Uncaught Exception:', err?.message || err);
+});
+
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
