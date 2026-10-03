@@ -15,7 +15,9 @@ import {
   GuildMember,
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle
+  ButtonStyle,
+  AuditLogEvent,
+  ChannelType
 } from 'discord.js';
 import { Shoukaku, Connectors } from 'shoukaku';
 
@@ -608,6 +610,290 @@ const slashCommands = [
       await channel.bulkDelete(messages, true);
       await interaction.reply({ content: `🧹 Đã dọn dẹp thành công ${messages.size} tin nhắn.`, ephemeral: true });
     }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('delete-afk-channel')
+      .setDescription('Xóa kênh thoại AFK của server và hủy cấu hình AFK')
+      .addChannelOption(opt =>
+        opt.setName('channel')
+          .setDescription('Chọn kênh voice AFK cần xóa (để trống nếu muốn bot tự tìm kênh AFK)')
+          .addChannelTypes(ChannelType.GuildVoice)
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels) &&
+          interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Manage Channels.', ephemeral: true });
+      }
+
+      const guild = interaction.guild!;
+      let targetChannel = interaction.options.getChannel('channel') as any;
+
+      if (!targetChannel) {
+        targetChannel = guild.afkChannel || guild.channels.cache.find(
+          c => c.type === ChannelType.GuildVoice && c.name.toLowerCase().includes('afk')
+        );
+      }
+
+      if (!targetChannel) {
+        return interaction.reply({
+          content: '❌ Không tìm thấy kênh AFK nào được cấu hình trên server hoặc có tên chứa "AFK". Bạn có thể chỉ định rõ kênh bằng tùy chọn `/delete-afk-channel channel: [Kênh Voice]`.',
+          ephemeral: true
+        });
+      }
+
+      try {
+        const channelName = targetChannel.name;
+        // Reset AFK setting in Guild if it matches
+        if (guild.afkChannelId === targetChannel.id) {
+          await guild.setAFKChannel(null, 'Hủy kênh AFK theo lệnh quản trị');
+        }
+
+        // Delete the voice channel
+        await targetChannel.delete('Xóa kênh AFK theo yêu cầu của Quản trị viên');
+
+        const embed = new EmbedBuilder()
+          .setTitle('🗑️ ĐÃ XÓA KÊNH AFK THÀNH CÔNG')
+          .setDescription(`Kênh thoại **${channelName}** đã được xóa triệt để khỏi máy chủ và cấu hình AFK của server đã được reset về mặc định.`)
+          .setColor(0x00cc88)
+          .setFooter({ text: `Thực hiện bởi: ${interaction.user.tag}` })
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+      } catch (err: any) {
+        await interaction.reply({ content: `❌ Lỗi xóa kênh AFK: ${err.message}`, ephemeral: true });
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('kick-afk')
+      .setDescription('Ngắt kết nối toàn bộ thành viên đang treo máy trong phòng voice AFK')
+      .addChannelOption(opt =>
+        opt.setName('channel')
+          .setDescription('Kênh voice cần dọn dẹp (để trống nếu muốn quét kênh AFK mặc định)')
+          .addChannelTypes(ChannelType.GuildVoice)
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.MoveMembers) &&
+          interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Move Members để dọn phòng AFK.', ephemeral: true });
+      }
+
+      const guild = interaction.guild!;
+      let voiceChannel = interaction.options.getChannel('channel') as any;
+
+      if (!voiceChannel) {
+        voiceChannel = guild.afkChannel || guild.channels.cache.find(
+          c => c.type === ChannelType.GuildVoice && c.name.toLowerCase().includes('afk')
+        );
+      }
+
+      if (!voiceChannel) {
+        return interaction.reply({ content: '❌ Không tìm thấy kênh AFK nào.', ephemeral: true });
+      }
+
+      const members = voiceChannel.members;
+      const count = members.size;
+      if (count === 0) {
+        return interaction.reply({ content: `📭 Kênh thoại **${voiceChannel.name}** hiện không có ai treo máy.`, ephemeral: true });
+      }
+
+      await interaction.deferReply();
+      let kicked = 0;
+      for (const [, member] of members) {
+        try {
+          await (member as GuildMember).voice.disconnect('Quản trị viên dọn dẹp phòng AFK');
+          kicked++;
+        } catch {}
+      }
+
+      await interaction.editReply(`🧹 Đã ngắt kết nối thành công **${kicked}/${count}** thành viên đang treo máy trong kênh <#${voiceChannel.id}>.`);
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('taixiu')
+      .setDescription('Mini game Tài Xỉu đổ xúc xắc may mắn 🎲 (Tài: 11-17, Xỉu: 4-10)'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const embed = new EmbedBuilder()
+        .setTitle('🎲 SÒNG BẠC MAY MẮN: TÀI XỈU AEGIS')
+        .setDescription(
+          `Chào mừng <@${interaction.user.id}> đến với bàn cược Xúc Xắc!\n\n` +
+          `• **TÀI (11 - 17 điểm)**: Tổng 3 xúc xắc lớn\n` +
+          `• **XỈU (4 - 10 điểm)**: Tổng 3 xúc xắc nhỏ\n` +
+          `• **TAM HOA (Bão)**: 3 mặt xúc xắc giống nhau (Nhà cái ăn)\n\n` +
+          `👉 Hãy bấm vào nút bên dưới để chọn cửa cược:`
+        )
+        .setColor(0xf1c40f)
+        .setFooter({ text: 'Mini Game AegisCore • Chúc bạn may mắn!' });
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`taixiu_tai_${interaction.user.id}`)
+          .setLabel('🎲 CƯỢC TÀI (11 - 17)')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`taixiu_xiu_${interaction.user.id}`)
+          .setLabel('🎲 CƯỢC XỈU (4 - 10)')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('rps')
+      .setDescription('Mini game Kéo Búa Bao (Rock Paper Scissors) ✊✋✌️'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const embed = new EmbedBuilder()
+        .setTitle('✊✋✌️ ĐẤU TRƯỜNG KÉO - BÚA - BAO')
+        .setDescription(`Người thách đấu: <@${interaction.user.id}>\n\nHãy chọn một trong 3 đòn tấn công bên dưới để đấu với Bot:`)
+        .setColor(0x3498db);
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`rps_rock_${interaction.user.id}`)
+          .setLabel('✊ BÚA')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`rps_paper_${interaction.user.id}`)
+          .setLabel('✋ BAO')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`rps_scissors_${interaction.user.id}`)
+          .setLabel('✌️ KÉO')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('coinflip')
+      .setDescription('Mini game Tung Đồng Xu may mắn 🪙 (Ngửa / Sấp)'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const embed = new EmbedBuilder()
+        .setTitle('🪙 TUNG ĐỒNG XU MAY RỦI')
+        .setDescription(`Người chơi: <@${interaction.user.id}>\n\nĐoán xem đồng xu sẽ rơi vào mặt nào? Bấm nút bên dưới:`)
+        .setColor(0xe67e22);
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`coin_heads_${interaction.user.id}`)
+          .setLabel('🪙 MẶT NGỬA (Heads)')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`coin_tails_${interaction.user.id}`)
+          .setLabel('🪙 MẶT SẤP (Tails)')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('setup-owner-role')
+      .setDescription('Bot tạo Role Quyền Riêng Tối Cao (Administrator) và tự động gán cho Chủ Sở Hữu (Owner)')
+      .addStringOption(opt =>
+        opt.setName('name')
+          .setDescription('Tên Role mong muốn (mặc định: 👑 SOVEREIGN OWNER)')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('color')
+          .setDescription('Màu sắc của Role hiển thị trên bảng thành viên')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Vàng Kim Hoàng Gia (Gold)', value: 'gold' },
+            { name: 'Đỏ Rực Quyền Lực (Crimson)', value: 'crimson' },
+            { name: 'Tím Huyền Bí (Imperial Purple)', value: 'purple' },
+            { name: 'Xanh Neon Tối Tân (Cyber Green)', value: 'green' },
+            { name: 'Xanh Băng Thanh Lịch (Cyan Blue)', value: 'cyan' }
+          )
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const guild = interaction.guild!;
+      const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === guild.ownerId;
+
+      if (!isOwner) {
+        return interaction.reply({
+          content: '❌ Lệnh này là đặc quyền tối thượng của Chủ Sở Hữu (Server Owner). Bạn không có thẩm quyền sử dụng.',
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply();
+
+      const roleName = interaction.options.getString('name') || '👑 SOVEREIGN OWNER';
+      const colorOption = interaction.options.getString('color') || 'gold';
+
+      const colorMap: Record<string, number> = {
+        gold: 0xffd700,
+        crimson: 0xff0044,
+        purple: 0x9b59b6,
+        green: 0x00ff88,
+        cyan: 0x00ccff
+      };
+
+      const selectedColor = colorMap[colorOption] || 0xffd700;
+
+      try {
+        let role = guild.roles.cache.find(r => r.name === roleName);
+
+        if (!role) {
+          role = await guild.roles.create({
+            name: roleName,
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator],
+            mentionable: false,
+            reason: `Bot cấp Role Quyền Riêng Tối Cao cho Chủ Sở Hữu (${interaction.user.tag})`
+          });
+        } else {
+          await role.edit({
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator]
+          });
+        }
+
+        // Try pushing the role as high as possible under bot's highest role
+        const botHighest = guild.members.me?.roles.highest.position || 1;
+        if (botHighest > 1) {
+          await role.setPosition(botHighest - 1).catch(() => null);
+        }
+
+        // Add the role to the owner
+        const targetMember = await guild.members.fetch(interaction.user.id);
+        await targetMember.roles.add(role, 'Gán Role Quyền Riêng cho Owner');
+
+        const embed = new EmbedBuilder()
+          .setTitle('👑 ĐÃ THIẾT LẬP VÀ GÁN ROLE TỐI CAO CHO CHỦ SỞ HỮU THÀNH CÔNG!')
+          .setDescription(
+            `Hệ thống AegisCore đã sử dụng thẩm quyền tối cao để khởi tạo và trao quyền cho bạn!\n\n` +
+            `• **Tên Role:** <@&${role.id}> (\`${role.name}\`)\n` +
+            `• **Được gán cho:** <@${targetMember.id}> (\`${targetMember.user.tag}\`)\n` +
+            `• **Quyền hạn nạp sẵn:** \`Administrator 100% (Toàn Quyền Toàn Năng)\`\n` +
+            `• **Vị trí hiển thị:** Tách riêng biệt ở nhóm trên cùng (Hoisted)\n` +
+            `• **Màu sắc:** \`${colorOption.toUpperCase()}\`\n` +
+            `• **Cơ chế bảo vệ:** 🛡️ Bất khả xâm phạm (Nếu bị kẻ khác gỡ, Bot sẽ tự động gán lại ngay lập tức).`
+          )
+          .setColor(selectedColor)
+          .setThumbnail(targetMember.user.displayAvatarURL())
+          .setFooter({ text: 'Aegis Security • Supreme Owner Privilege' })
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (err: any) {
+        await interaction.editReply(`❌ Lỗi cấp quyền: ${err.message}. Hãy đảm bảo Role của Bot đang ở vị trí cao hơn trong Server Settings!`);
+      }
+    }
   }
 ];
 
@@ -724,34 +1010,437 @@ export async function startDiscordBot() {
         }
       }
     }
+
+    // Handle Mini Game: Tai Xiu Buttons
+    if (interaction.isButton() && interaction.customId.startsWith('taixiu_')) {
+      const parts = interaction.customId.split('_');
+      const choice = parts[1]; // 'tai' or 'xiu'
+      const originalUserId = parts[2];
+
+      if (originalUserId && interaction.user.id !== originalUserId) {
+        return interaction.reply({
+          content: '❌ Đây là bàn cược của người khác. Hãy gõ lệnh `/taixiu` để tự mở bàn cược cho riêng bạn!',
+          ephemeral: true
+        });
+      }
+
+      const d1 = Math.floor(Math.random() * 6) + 1;
+      const d2 = Math.floor(Math.random() * 6) + 1;
+      const d3 = Math.floor(Math.random() * 6) + 1;
+      const total = d1 + d2 + d3;
+      const isStorm = d1 === d2 && d2 === d3;
+
+      let resultText = '';
+      let isWin = false;
+
+      if (isStorm) {
+        resultText = `🌪️ BÃO TAM HOA (${d1}-${d2}-${d3}) - Nhà cái ăn trọn!`;
+        isWin = false;
+      } else if (total >= 11) {
+        resultText = 'TÀI';
+        isWin = choice === 'tai';
+      } else {
+        resultText = 'XỈU';
+        isWin = choice === 'xiu';
+      }
+
+      const diceEmojis = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+      const embed = new EmbedBuilder()
+        .setTitle('🎲 KẾT QUẢ ĐỔ XÚC XẮC TÀI XỈU')
+        .setDescription(
+          `**Người chơi:** <@${interaction.user.id}>\n` +
+          `**Cửa đã chọn:** **${choice === 'tai' ? '🟢 TÀI (11-17)' : '🔴 XỈU (4-10)'}**\n\n` +
+          `🎲 **Xúc xắc:** \`[ ${diceEmojis[d1 - 1]} ${d1} ]\` + \`[ ${diceEmojis[d2 - 1]} ${d2} ]\` + \`[ ${diceEmojis[d3 - 1]} ${d3} ]\`\n` +
+          `📊 **Tổng điểm:** \`${total}\` điểm $\\rightarrow$ **${resultText}**\n\n` +
+          `**Kết quả:** ${isWin ? '🎉 **BẠN ĐÃ THẮNG CƯỢC!** Xuất sắc!' : '💀 **BẠN ĐÃ THUA CƯỢC!** Chúc bạn may mắn lần sau!'}`
+        )
+        .setColor(isWin ? 0x2ecc71 : 0xe74c3c)
+        .setTimestamp();
+
+      await interaction.update({ embeds: [embed], components: [] });
+      return;
+    }
+
+    // Handle Mini Game: Rock Paper Scissors Buttons
+    if (interaction.isButton() && interaction.customId.startsWith('rps_')) {
+      const parts = interaction.customId.split('_');
+      const userChoice = parts[1]; // 'rock', 'paper', 'scissors'
+      const originalUserId = parts[2];
+
+      if (originalUserId && interaction.user.id !== originalUserId) {
+        return interaction.reply({
+          content: '❌ Hãy dùng lệnh `/rps` để mở lượt đấu kéo búa bao của riêng bạn!',
+          ephemeral: true
+        });
+      }
+
+      const choices = ['rock', 'paper', 'scissors'];
+      const botChoice = choices[Math.floor(Math.random() * choices.length)];
+
+      const choiceNames: Record<string, string> = {
+        rock: '✊ Búa',
+        paper: '✋ Bao',
+        scissors: '✌️ Kéo'
+      };
+
+      let outcome = '';
+      let color = 0x3498db;
+
+      if (userChoice === botChoice) {
+        outcome = '🤝 **KẾT QUẢ HÒA!** Cả hai đều chọn như nhau.';
+        color = 0xf39c12;
+      } else if (
+        (userChoice === 'rock' && botChoice === 'scissors') ||
+        (userChoice === 'paper' && botChoice === 'rock') ||
+        (userChoice === 'scissors' && botChoice === 'paper')
+      ) {
+        outcome = '🏆 **BẠN ĐÃ CHIẾN THẮNG!** Đòn đánh tuyệt vời!';
+        color = 0x2ecc71;
+      } else {
+        outcome = '💀 **BOT ĐÃ THẮNG!** Bạn đã bị hạ gục!';
+        color = 0xe74c3c;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('✊✋✌️ KẾT QUẢ ĐẤU TRƯỜNG KÉO BÚA BAO')
+        .setDescription(
+          `**Người chơi:** <@${interaction.user.id}>\n\n` +
+          `• **Bạn chọn:** ${choiceNames[userChoice]}\n` +
+          `• **Bot chọn:** ${choiceNames[botChoice]}\n\n` +
+          `${outcome}`
+        )
+        .setColor(color)
+        .setTimestamp();
+
+      await interaction.update({ embeds: [embed], components: [] });
+      return;
+    }
+
+    // Handle Mini Game: Coinflip Buttons
+    if (interaction.isButton() && interaction.customId.startsWith('coin_')) {
+      const parts = interaction.customId.split('_');
+      const userSide = parts[1]; // 'heads' or 'tails'
+      const originalUserId = parts[2];
+
+      if (originalUserId && interaction.user.id !== originalUserId) {
+        return interaction.reply({
+          content: '❌ Hãy dùng lệnh `/coinflip` để tung đồng xu của riêng bạn!',
+          ephemeral: true
+        });
+      }
+
+      const outcome = Math.random() < 0.5 ? 'heads' : 'tails';
+      const isWin = userSide === outcome;
+
+      const embed = new EmbedBuilder()
+        .setTitle('🪙 KẾT QUẢ TUNG ĐỒNG XU')
+        .setDescription(
+          `**Người chơi:** <@${interaction.user.id}>\n` +
+          `**Dự đoán của bạn:** ${userSide === 'heads' ? '🪙 Mặt Ngửa (Heads)' : '🪙 Mặt Sấp (Tails)'}\n\n` +
+          `🎯 **Đồng xu rơi vào:** **${outcome === 'heads' ? '🪙 MẶT NGỬA (HEADS)' : '🪙 MẶT SẤP (TAILS)'}**\n\n` +
+          `**Kết quả:** ${isWin ? '🎉 **BẠN ĐOÁN CHÍNH XÁC!** Thần tài mỉm cười!' : '💔 **BẠN ĐOÁN SAI RỒI!** Chúc may mắn lần sau!'}`
+        )
+        .setColor(isWin ? 0x2ecc71 : 0xe74c3c)
+        .setTimestamp();
+
+      await interaction.update({ embeds: [embed], components: [] });
+      return;
+    }
   });
 
-  // Anti-Spam protection
+  // Security Log Dispatcher
+  async function sendSecurityLog(guild: any, embed: EmbedBuilder) {
+    try {
+      let logChannel: TextChannel | undefined;
+      if (LOG_CHANNEL_ID) {
+        logChannel = guild.channels.cache.get(LOG_CHANNEL_ID) as TextChannel;
+      }
+      if (!logChannel) {
+        logChannel = guild.channels.cache.find(
+          (c: any) => (c.name.includes('aegis-security') || c.name.includes('security-logs') || c.name.includes('bot-logs')) && c.isTextBased()
+        ) as TextChannel;
+      }
+      if (!logChannel && guild.systemChannel) {
+        logChannel = guild.systemChannel as TextChannel;
+      }
+      if (logChannel) {
+        await logChannel.send({ embeds: [embed] }).catch(() => null);
+      }
+    } catch (e) {
+      console.error('[Security Log Error]:', e);
+    }
+  }
+
+  const INVITE_REGEX = /(discord\.(gg|io|me|li)|discordapp\.com\/invite|discord\.com\/invite)\/[a-zA-Z0-9]+/i;
+  const RAID_COMMAND_REGEX = /^[!./+?$#~](nuke|raid|destroy|banall|kickall|spam|crash|deleteall|pruneall|killguild|wizz|fuck)/i;
+  const PHISHING_REGEX = /(free-nitro|discord-gift|steamcommunity\.link|discorcl\.gift|steam-gift|dlscord\.com|steamcommuniity|nitro-drop)/i;
+
+  // Ruthless Anti-Raid, Rogue Bot Auto-Ban & Message Cleaner
   client.on(Events.MessageCreate, async (message) => {
-    if (!message.guild || message.author.bot) return;
+    if (!message.guild || message.author.id === client.user?.id) return;
     if (message.author.id === OWNER_ID) return; // Whitelist Owner
 
+    const content = message.content || '';
+    const isBot = message.author.bot;
     const now = Date.now();
+
+    // Track message frequency
     const timestamps = userMsgHistory.get(message.author.id) || [];
     const recent = timestamps.filter(t => now - t < 3000);
     recent.push(now);
     userMsgHistory.set(message.author.id, recent);
 
-    // Spam flood check (> 5 messages in 3 seconds)
-    if (recent.length > 5) {
-      await message.delete().catch(() => null);
-      const member = message.member;
-      if (member) {
-        await member.timeout(5 * 60 * 1000, '[Aegis Anti-Spam] Spam flood').catch(() => null);
-        await message.channel.send(`🛑 <@${message.author.id}> đã bị tạm khóa chat 5 phút do spam liên tục.`);
+    const isSpamming = recent.length > 3;
+    const isRaidCommand = RAID_COMMAND_REGEX.test(content);
+    const isPhishing = PHISHING_REGEX.test(content);
+    const isInvite = INVITE_REGEX.test(content);
+    const isMassMention = message.mentions.users.size > 3 || message.mentions.roles.size > 2 ||
+      (content.includes('@everyone') && !message.member?.permissions.has(PermissionsBitField.Flags.MentionEveryone));
+
+    // Case 1: ROGUE EXTERNAL BOT ATTACK (Auto-Ban Rogue Bot Immediately!)
+    if (isBot) {
+      if (isSpamming || isRaidCommand || isPhishing || isInvite || isMassMention) {
+        await message.delete().catch(() => null);
+
+        // BAN THE ROGUE BOT
+        await message.guild.members.ban(message.author.id, {
+          reason: `[Aegis Anti-Raid] Tiêu diệt Bot bên ngoài phá hoại / Spam raid: ${content.slice(0, 50)}`
+        }).catch((err) => {
+          console.error(`[Ban Bot Error]:`, err.message);
+        });
+
+        const alertEmbed = new EmbedBuilder()
+          .setTitle('🚨 [AEGIS SECURITY] ĐÃ TIÊU DIỆT & BAN THẲNG TAY BOT PHÁ HOẠI!')
+          .setDescription(`Hệ thống Aegis Shield đã phát hiện và thi hành lệnh BAN ngay lập tức đối với bot lạ cố tình spam/phá hoại.`)
+          .addFields(
+            { name: '🤖 Bot bị tiêu diệt', value: `<@${message.author.id}> (\`${message.author.tag}\`)`, inline: true },
+            { name: '🆔 Bot ID', value: `\`${message.author.id}\``, inline: true },
+            { name: '⚠️ Hành vi', value: isRaidCommand ? 'Gọi lệnh Raid' : isPhishing ? 'Gửi link lừa đảo' : isInvite ? 'Gửi link mời Discord' : 'Spam tin nhắn hàng loạt', inline: false },
+            { name: '🔨 Biện pháp thi hành', value: '**BAN VĨNH VIỄN KHỎI SERVER (Cấm tái xuất hiện)**', inline: false }
+          )
+          .setColor(0xff0044)
+          .setTimestamp();
+
+        await message.channel.send({ embeds: [alertEmbed] }).catch(() => null);
+        await sendSecurityLog(message.guild, alertEmbed);
+        return;
+      }
+    }
+
+    // Case 2: HUMAN USER TRIGGERING RAID COMMANDS OR MALICIOUS ACTIONS
+    if (!isBot) {
+      // 2A: User calling a Raid/Nuke command (e.g. !nuke, !raid, .destroy, !banall)
+      if (isRaidCommand) {
+        await message.delete().catch(() => null);
+
+        // Ban the raid instigator immediately!
+        await message.guild.members.ban(message.author.id, {
+          reason: `[Aegis Anti-Raid] Kẻ chủ mưu gọi lệnh phá hoại server: ${content.slice(0, 60)}`
+        }).catch(() => null);
+
+        const alertEmbed = new EmbedBuilder()
+          .setTitle('🚨 [AEGIS SECURITY] ĐÃ BAN THẲNG TAY KẺ GỌI LỆNH RAID!')
+          .setDescription(`Phát hiện đối tượng cố tình tương tác / gọi lệnh phá hoại server. Hệ thống đã thi hành lệnh BAN ngay lập tức!`)
+          .addFields(
+            { name: '👤 Kẻ vi phạm', value: `<@${message.author.id}> (\`${message.author.tag}\`)`, inline: true },
+            { name: '🛑 Lệnh đã gõ', value: `\`${content.slice(0, 100)}\``, inline: true },
+            { name: '🔨 Biện pháp xử lý', value: '**ĐÃ BỊ BAN THẲNG TAY KHỎI SERVER**', inline: false }
+          )
+          .setColor(0xff0044)
+          .setTimestamp();
+
+        await message.channel.send({ embeds: [alertEmbed] }).catch(() => null);
+        await sendSecurityLog(message.guild, alertEmbed);
+        return;
+      }
+
+      // 2B: User sending Phishing links or unauthorized Discord Invites
+      if (isPhishing || isInvite) {
+        await message.delete().catch(() => null);
+
+        if (isPhishing) {
+          // Phishing link: Ban immediately!
+          await message.guild.members.ban(message.author.id, {
+            reason: '[Aegis Anti-Phishing] Phát tán link lừa đảo / Nitro giả mạo'
+          }).catch(() => null);
+
+          const alertEmbed = new EmbedBuilder()
+            .setTitle('🚨 [AEGIS SECURITY] ĐÃ BAN KẺ PHÁT TÁN LINK LỪA ĐẢO!')
+            .setDescription(`Người dùng <@${message.author.id}> đã phát tán liên kết lừa đảo/scam độc hại và bị BAN vĩnh viễn.`)
+            .setColor(0xff0044)
+            .setTimestamp();
+
+          await message.channel.send({ embeds: [alertEmbed] }).catch(() => null);
+          await sendSecurityLog(message.guild, alertEmbed);
+        } else {
+          // Invite link: Timeout 1 hour + Warning
+          if (message.member) {
+            await message.member.timeout(60 * 60 * 1000, '[Aegis Anti-Invite] Quảng cáo server trái phép').catch(() => null);
+          }
+          await message.channel.send(`⚠️ <@${message.author.id}> **CẢNH BÁO:** Tin nhắn quảng cáo link server của bạn đã bị tiêu hủy và bạn bị cấm chat 1 giờ!`).catch(() => null);
+        }
+        return;
+      }
+
+      // 2C: User spamming messages or mass mentions (> 3 messages / 3s)
+      if (isSpamming || isMassMention) {
+        await message.delete().catch(() => null);
+        if (message.member) {
+          await message.member.timeout(15 * 60 * 1000, '[Aegis Anti-Spam] Spam flood / Mass mention').catch(() => null);
+        }
+        await message.channel.send(`⚠️ <@${message.author.id}> **CẢNH BÁO AN NINH:** Bạn bị cấm chat 15 phút do hành vi spam tin nhắn / tag vô tội vạ.`).catch(() => null);
+        return;
       }
     }
   });
 
-  // Anti-Nuke Audit log protection (Channel Delete)
+  // Anti-Bot Protection: Auto-ban rogue bots added by non-owners
+  client.on(Events.GuildMemberAdd, async (member) => {
+    if (!member.user.bot) return;
+
+    try {
+      const auditLogs = await member.guild.fetchAuditLogs({
+        type: AuditLogEvent.BotAdd,
+        limit: 1
+      }).catch(() => null);
+
+      const entry = auditLogs?.entries.first();
+      const inviter = entry?.executor;
+
+      // If invited by someone who is NOT the Owner and NOT the Bot itself
+      if (inviter && inviter.id !== OWNER_ID && inviter.id !== client.user?.id) {
+        // BAN THE UNAPPROVED BOT IMMEDIATELY
+        await member.ban({
+          reason: `[Aegis Anti-Bot] Bot lạ được mời trái phép bởi kẻ không có thẩm quyền (${inviter.tag})`
+        }).catch(() => null);
+
+        // TIMEOUT OR BAN THE PERSON WHO INVITED THE BOT
+        const inviterMember = await member.guild.members.fetch(inviter.id).catch(() => null);
+        if (inviterMember) {
+          await inviterMember.timeout(24 * 60 * 60 * 1000, '[Aegis Anti-Raid] Tự ý thêm Bot lạ vào server khi chưa được phép').catch(() => null);
+        }
+
+        const alertEmbed = new EmbedBuilder()
+          .setTitle('🚨 [AEGIS ANTI-BOT] PHÁT HIỆN BOT LẠ ĐƯỢC MỜI VÀO SERVER TRÁI PHÉP!')
+          .setDescription(`Hệ thống đã tự động kích hoạt chế độ phòng thủ: **BAN Bot lạ ngay tại cửa** và **cách ly kẻ mời bot**!`)
+          .addFields(
+            { name: '🤖 Bot bị BAN', value: `${member.user.tag} (\`${member.user.id}\`)`, inline: true },
+            { name: '👤 Kẻ mời bot', value: `<@${inviter.id}> (\`${inviter.tag}\`)`, inline: true },
+            { name: '🛡️ Trạng thái', value: 'Đã trục xuất Bot & Tước quyền kẻ mời bot', inline: false }
+          )
+          .setColor(0xff0044)
+          .setTimestamp();
+
+        await sendSecurityLog(member.guild, alertEmbed);
+      }
+    } catch (err: any) {
+      console.error('[Anti-Bot Error]:', err?.message || err);
+    }
+  });
+
+  // Anti-Nuke: Ban nuker & Auto-restore when a channel is deleted
   client.on(Events.ChannelDelete, async (channel) => {
     if (!('guild' in channel) || !channel.guild) return;
-    console.warn(`[Anti-Raid] Kênh bị xóa: ${(channel as any).name} trong Guild: ${channel.guild.name}`);
+    const guild = channel.guild;
+
+    try {
+      const auditLogs = await guild.fetchAuditLogs({
+        type: AuditLogEvent.ChannelDelete,
+        limit: 1
+      }).catch(() => null);
+
+      const entry = auditLogs?.entries.first();
+      const nuker = entry?.executor;
+
+      if (nuker && nuker.id !== OWNER_ID && nuker.id !== client.user?.id) {
+        // BAN NUKER IMMEDIATELY
+        await guild.members.ban(nuker.id, {
+          reason: `[Aegis Anti-Nuke] Cố tình xóa kênh: ${(channel as any).name}`
+        }).catch(() => null);
+
+        // AUTO RESTORE DELETED CHANNEL
+        const restored = await guild.channels.create({
+          name: (channel as any).name,
+          type: (channel as any).type,
+          parent: (channel as any).parentId,
+          reason: '[Aegis Auto-Restore] Tự động khôi phục kênh bị nuker xóa'
+        }).catch(() => null);
+
+        const alertEmbed = new EmbedBuilder()
+          .setTitle('🚨 [AEGIS ANTI-NUKE] ĐÃ BAN KẺ XÓA KÊNH & TỰ ĐỘNG KHÔI PHỤC!')
+          .setDescription(`Phát hiện hành vi phá hoại xóa kênh server. AegisCore đã tiêu diệt thủ phạm và tái tạo lại kênh ngay lập tức!`)
+          .addFields(
+            { name: '👤 Nuker bị BAN', value: `<@${nuker.id}> (\`${nuker.tag}\`)`, inline: true },
+            { name: '📁 Kênh bị xóa', value: `\`${(channel as any).name}\``, inline: true },
+            { name: '✅ Khôi phục', value: restored ? `<#${restored.id}>` : 'Đã khôi phục', inline: true }
+          )
+          .setColor(0xff0044)
+          .setTimestamp();
+
+        await sendSecurityLog(guild, alertEmbed);
+      }
+    } catch (err: any) {
+      console.error('[Anti-Nuke Error]:', err?.message || err);
+    }
+  });
+
+  // Anti-Nuke: Ban nuker when a role is deleted
+  client.on(Events.GuildRoleDelete, async (role) => {
+    const guild = role.guild;
+    try {
+      const auditLogs = await guild.fetchAuditLogs({
+        type: AuditLogEvent.RoleDelete,
+        limit: 1
+      }).catch(() => null);
+
+      const entry = auditLogs?.entries.first();
+      const nuker = entry?.executor;
+
+      if (nuker && nuker.id !== OWNER_ID && nuker.id !== client.user?.id) {
+        await guild.members.ban(nuker.id, {
+          reason: `[Aegis Anti-Nuke] Cố tình xóa vai trò (Role): ${role.name}`
+        }).catch(() => null);
+
+        await guild.roles.create({
+          name: role.name,
+          color: role.color,
+          reason: '[Aegis Auto-Restore] Khôi phục Role bị nuker xóa'
+        }).catch(() => null);
+
+        const alertEmbed = new EmbedBuilder()
+          .setTitle('🚨 [AEGIS ANTI-NUKE] ĐÃ BAN KẺ XÓA ROLE!')
+          .setDescription(`Phát hiện hành vi xóa Role server. AegisCore đã BAN thủ phạm <@${nuker.id}> và tái tạo lại Role \`${role.name}\`!`)
+          .setColor(0xff0044)
+          .setTimestamp();
+
+        await sendSecurityLog(guild, alertEmbed);
+      }
+    } catch (err: any) {
+      console.error('[Anti-RoleDelete Error]:', err?.message || err);
+    }
+  });
+
+  // Supreme Owner Role Protection: Auto-restore role if removed
+  client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+    const isOwner = newMember.id === OWNER_ID || newMember.id === newMember.guild.ownerId;
+    if (!isOwner) return;
+
+    // Check if the owner lost a sovereign role
+    const lostRoles = oldMember.roles.cache.filter(r => !newMember.roles.cache.has(r.id));
+    const sovereignRoleLost = lostRoles.find(r => r.name.includes('SOVEREIGN OWNER') || r.name.includes('CHỦ SỞ HỮU'));
+
+    if (sovereignRoleLost) {
+      console.warn(`[Owner Shield] Phát hiện Role ${sovereignRoleLost.name} bị gỡ khỏi Owner! Đang tự động gán lại...`);
+      await newMember.roles.add(sovereignRoleLost, 'Tự động khôi phục Role Tối Cao cho Owner (Owner Shield)').catch(() => null);
+
+      const alertEmbed = new EmbedBuilder()
+        .setTitle('🛡️ [OWNER SHIELD] ĐÃ TỰ ĐỘNG KHÔI PHỤC ROLE CHO CHỦ SỞ HỮU!')
+        .setDescription(`Phát hiện vai trò tối cao **${sovereignRoleLost.name}** bị tháo gỡ khỏi Chủ Sở Hữu <@${newMember.id}>. Bot đã tự động gán lại ngay lập tức!`)
+        .setColor(0xffd700)
+        .setTimestamp();
+
+      await sendSecurityLog(newMember.guild, alertEmbed);
+    }
   });
 
   try {
