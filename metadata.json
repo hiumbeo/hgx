@@ -1,0 +1,6 @@
+{
+  "name": "AegisCore - Anti-Raid Nuke & Lavalink Music Discord Suite",
+  "description": "Comprehensive Discord Server Protection with Smart Anti-Spam/Anti-Raid, Server Management, and Lavalink Music Engine for YouTube, SoundCloud, MP3 with public node failover and loop modes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
