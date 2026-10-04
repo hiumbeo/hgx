@@ -46,6 +46,29 @@ const LAVALINK_NODES = [
 export const OWNER_ID = process.env.OWNER_ID || '1542028462154317907';
 export let LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || '';
 
+// Security Log Dispatcher
+export async function sendSecurityLog(guild: any, embed: EmbedBuilder) {
+  try {
+    let logChannel: TextChannel | undefined;
+    if (LOG_CHANNEL_ID) {
+      logChannel = guild.channels.cache.get(LOG_CHANNEL_ID) as TextChannel;
+    }
+    if (!logChannel) {
+      logChannel = guild.channels.cache.find(
+        (c: any) => (c.name.includes('aegis-security') || c.name.includes('security-logs') || c.name.includes('bot-logs')) && c.isTextBased()
+      ) as TextChannel;
+    }
+    if (!logChannel && guild.systemChannel) {
+      logChannel = guild.systemChannel as TextChannel;
+    }
+    if (logChannel) {
+      await logChannel.send({ embeds: [embed] }).catch(() => null);
+    }
+  } catch (e) {
+    console.error('[Security Log Error]:', e);
+  }
+}
+
 // Discord Bot Client with full Gateway Intents
 export const client = new Client({
   intents: [
@@ -344,6 +367,14 @@ function buildCaroRows(game: CaroGame) {
   }
   return rows;
 }
+
+// AFK System State (Reasons, timestamps & auto-alerts)
+interface AfkStatus {
+  reason: string;
+  timestamp: number;
+  originalNickname?: string;
+}
+export const afkUsers = new Map<string, AfkStatus>();
 
 // Slash Commands
 const slashCommands = [
@@ -1019,6 +1050,217 @@ const slashCommands = [
       } catch (err: any) {
         await interaction.editReply(`❌ Lỗi cấp quyền: ${err.message}. Hãy đảm bảo Role của Bot đang ở vị trí cao hơn trong Server Settings!`);
       }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('owner-role')
+      .setDescription('Tạo Role Quyền Riêng Tối Cao (Administrator) và tự động gán cho Chủ Sở Hữu (Owner)')
+      .addStringOption(opt =>
+        opt.setName('name')
+          .setDescription('Tên Role mong muốn (mặc định: 👑 SOVEREIGN OWNER)')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('color')
+          .setDescription('Màu sắc của Role hiển thị trên bảng thành viên')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Vàng Kim Hoàng Gia (Gold)', value: 'gold' },
+            { name: 'Đỏ Rực Quyền Lực (Crimson)', value: 'crimson' },
+            { name: 'Tím Huyền Bí (Imperial Purple)', value: 'purple' },
+            { name: 'Xanh Neon Tối Tân (Cyber Green)', value: 'green' },
+            { name: 'Xanh Băng Thanh Lịch (Cyan Blue)', value: 'cyan' }
+          )
+      )
+      .addUserOption(opt =>
+        opt.setName('target')
+          .setDescription('Người nhận Role (để trống nếu muốn tự gán cho chính bạn)')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const guild = interaction.guild!;
+      const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === guild.ownerId;
+
+      if (!isOwner) {
+        return interaction.reply({
+          content: '❌ Lệnh này là đặc quyền tối thượng của Chủ Sở Hữu (Server Owner). Bạn không có thẩm quyền sử dụng.',
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply();
+
+      const roleName = interaction.options.getString('name') || '👑 SOVEREIGN OWNER';
+      const colorOption = interaction.options.getString('color') || 'gold';
+      const targetUser = interaction.options.getUser('target') || interaction.user;
+
+      const colorMap: Record<string, number> = {
+        gold: 0xffd700,
+        crimson: 0xff0044,
+        purple: 0x9b59b6,
+        green: 0x00ff88,
+        cyan: 0x00ccff
+      };
+
+      const selectedColor = colorMap[colorOption] || 0xffd700;
+
+      try {
+        let role = guild.roles.cache.find(r => r.name === roleName);
+
+        if (!role) {
+          role = await guild.roles.create({
+            name: roleName,
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator],
+            mentionable: false,
+            reason: `Bot cấp Role Quyền Riêng Tối Cao theo yêu cầu của Owner (${interaction.user.tag})`
+          });
+        } else {
+          await role.edit({
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator]
+          });
+        }
+
+        const botHighest = guild.members.me?.roles.highest.position || 1;
+        if (botHighest > 1) {
+          await role.setPosition(botHighest - 1).catch(() => null);
+        }
+
+        const targetMember = await guild.members.fetch(targetUser.id);
+        await targetMember.roles.add(role, 'Gán Role Quyền Riêng Tối Cao');
+
+        const embed = new EmbedBuilder()
+          .setTitle('👑 ĐÃ THIẾT LẬP VÀ GÁN ROLE TỐI CAO THÀNH CÔNG!')
+          .setDescription(
+            `Hệ thống AegisCore đã sử dụng thẩm quyền tối cao để khởi tạo và trao quyền!\n\n` +
+            `• **Tên Role:** <@&${role.id}> (\`${role.name}\`)\n` +
+            `• **Được gán cho:** <@${targetMember.id}> (\`${targetMember.user.tag}\`)\n` +
+            `• **Quyền hạn nạp sẵn:** \`Administrator 100% (Toàn Quyền Toàn Năng)\`\n` +
+            `• **Vị trí hiển thị:** Tách riêng biệt ở nhóm trên cùng (Hoisted)\n` +
+            `• **Màu sắc:** \`${colorOption.toUpperCase()}\`\n` +
+            `• **Cơ chế bảo vệ:** 🛡️ Bất khả xâm phạm (Nếu là Chủ Sở Hữu và bị kẻ khác gỡ, Bot sẽ tự động gán lại ngay lập tức).`
+          )
+          .setColor(selectedColor)
+          .setThumbnail(targetMember.user.displayAvatarURL())
+          .setFooter({ text: 'Aegis Security • Supreme Privilege' })
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (err: any) {
+        await interaction.editReply(`❌ Lỗi cấp quyền: ${err.message}. Hãy đảm bảo Role của Bot đang ở vị trí cao hơn trong Server Settings!`);
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('delete-channel')
+      .setDescription('Xóa kênh bất kỳ (Text, Voice hoặc Category) kèm lý do quản trị')
+      .addChannelOption(opt =>
+        opt.setName('channel')
+          .setDescription('Kênh cần xóa (để trống nếu muốn xóa kênh hiện tại)')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('reason')
+          .setDescription('Lý do xóa kênh')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels) &&
+          interaction.user.id !== OWNER_ID && interaction.user.id !== interaction.guild!.ownerId) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Manage Channels.', ephemeral: true });
+      }
+
+      const targetChannel = (interaction.options.getChannel('channel') || interaction.channel) as any;
+      const reason = interaction.options.getString('reason') || 'Xóa theo lệnh của Quản trị viên';
+
+      if (!targetChannel) {
+        return interaction.reply({ content: '❌ Không xác định được kênh cần xóa.', ephemeral: true });
+      }
+
+      const isCurrentChannel = targetChannel.id === interaction.channelId;
+      const channelName = targetChannel.name;
+
+      try {
+        if (!isCurrentChannel) {
+          await targetChannel.delete(`[Delete-Channel] Bởi ${interaction.user.tag}: ${reason}`);
+          await interaction.reply({
+            content: `🗑️ Đã xóa thành công kênh **#${channelName}** với lý do: "*${reason}*".`,
+            ephemeral: true
+          });
+        } else {
+          await interaction.reply({
+            content: `⚠️ Kênh **#${channelName}** sẽ bị xóa ngay bây giờ theo yêu cầu của bạn...`
+          });
+          setTimeout(async () => {
+            await targetChannel.delete(`[Delete-Channel] Bởi ${interaction.user.tag}: ${reason}`).catch(() => null);
+          }, 1500);
+        }
+
+        const logEmbed = new EmbedBuilder()
+          .setTitle('🗑️ [QUẢN LÝ KÊNH] ĐÃ XÓA KÊNH')
+          .setDescription(`Kênh **#${channelName}** (\`${targetChannel.id}\`) đã được xóa thành công.`)
+          .addFields(
+            { name: '👤 Người thực hiện', value: `<@${interaction.user.id}> (\`${interaction.user.tag}\`)`, inline: true },
+            { name: '📝 Lý do', value: `\`${reason}\``, inline: true }
+          )
+          .setColor(0xe74c3c)
+          .setTimestamp();
+
+        await sendSecurityLog(interaction.guild, logEmbed);
+      } catch (err: any) {
+        if (!interaction.replied) {
+          await interaction.reply({ content: `❌ Lỗi xóa kênh: ${err.message}`, ephemeral: true });
+        }
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('afk')
+      .setDescription('Bật trạng thái vắng mặt (AFK) kèm lý do. Bot sẽ tự thông báo khi ai đó tag bạn')
+      .addStringOption(opt =>
+        opt.setName('reason')
+          .setDescription('Lý do vắng mặt / AFK (Ví dụ: Đi ngủ, Bận học, Ăn cơm...)')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const reason = interaction.options.getString('reason') || 'Bận việc / Vắng mặt';
+      const userId = interaction.user.id;
+      const member = interaction.member as GuildMember;
+
+      let originalNickname = member?.nickname || interaction.user.username;
+      afkUsers.set(userId, {
+        reason,
+        timestamp: Date.now(),
+        originalNickname
+      });
+
+      // Try updating nickname to [AFK] Name if bot has permission
+      if (member && interaction.guild?.members.me?.permissions.has(PermissionsBitField.Flags.ManageNicknames)) {
+        if (interaction.guild.ownerId !== userId && interaction.guild.members.me.roles.highest.position > member.roles.highest.position) {
+          const newNick = `[AFK] ${originalNickname}`.slice(0, 32);
+          await member.setNickname(newNick, 'Bật trạng thái AFK').catch(() => null);
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('💤 ĐÃ BẬT TRẠNG THÁI AFK')
+        .setDescription(
+          `<@${userId}> hiện đã bật chế độ vắng mặt (AFK)!\n\n` +
+          `• **Lý do:** "*${reason}*"\n` +
+          `• **Thời gian bắt đầu:** <t:${Math.floor(Date.now() / 1000)}:R>\n\n` +
+          `📌 *Bot sẽ tự động báo tin cho bất kỳ ai tag bạn, và sẽ tự tắt chế độ AFK khi bạn chat lại vào kênh bất kỳ!*`
+        )
+        .setColor(0x95a5a6)
+        .setThumbnail(interaction.user.displayAvatarURL())
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed] });
     }
   },
   {
@@ -1996,40 +2238,52 @@ export async function startDiscordBot() {
         .setTimestamp();
 
       const rows = buildCaroRows(game);
-      return interaction.update({ embeds: [nextEmbed], components: rows });
     }
   });
-
-  // Security Log Dispatcher
-  async function sendSecurityLog(guild: any, embed: EmbedBuilder) {
-    try {
-      let logChannel: TextChannel | undefined;
-      if (LOG_CHANNEL_ID) {
-        logChannel = guild.channels.cache.get(LOG_CHANNEL_ID) as TextChannel;
-      }
-      if (!logChannel) {
-        logChannel = guild.channels.cache.find(
-          (c: any) => (c.name.includes('aegis-security') || c.name.includes('security-logs') || c.name.includes('bot-logs')) && c.isTextBased()
-        ) as TextChannel;
-      }
-      if (!logChannel && guild.systemChannel) {
-        logChannel = guild.systemChannel as TextChannel;
-      }
-      if (logChannel) {
-        await logChannel.send({ embeds: [embed] }).catch(() => null);
-      }
-    } catch (e) {
-      console.error('[Security Log Error]:', e);
-    }
-  }
 
   const INVITE_REGEX = /(discord\.(gg|io|me|li)|discordapp\.com\/invite|discord\.com\/invite)\/[a-zA-Z0-9]+/i;
   const RAID_COMMAND_REGEX = /^[!./+?$#~](nuke|raid|destroy|banall|kickall|spam|crash|deleteall|pruneall|killguild|wizz|fuck)/i;
   const PHISHING_REGEX = /(free-nitro|discord-gift|steamcommunity\.link|discorcl\.gift|steam-gift|dlscord\.com|steamcommuniity|nitro-drop)/i;
 
-  // Ruthless Anti-Raid, Rogue Bot Auto-Ban & Message Cleaner
+  // Ruthless Anti-Raid, Rogue Bot Auto-Ban & Message Cleaner + AFK Manager
   client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || message.author.id === client.user?.id) return;
+
+    // 1. Check if the message author was AFK -> Welcome them back & disable AFK
+    if (afkUsers.has(message.author.id)) {
+      const afkData = afkUsers.get(message.author.id)!;
+      afkUsers.delete(message.author.id);
+
+      // Restore nickname if possible
+      if (message.member && message.guild.members.me?.permissions.has(PermissionsBitField.Flags.ManageNicknames)) {
+        if (message.guild.ownerId !== message.author.id && message.guild.members.me.roles.highest.position > message.member.roles.highest.position) {
+          message.member.setNickname(afkData.originalNickname || null, 'Tắt AFK - Quay trở lại chat').catch(() => null);
+        }
+      }
+
+      const welcomeBackEmbed = new EmbedBuilder()
+        .setTitle('👋 CHÀO MỪNG QUAY TRỞ LẠI!')
+        .setDescription(`Chào mừng <@${message.author.id}> đã trở lại trò chuyện! Đã tự động tắt chế độ AFK.\n*(Bạn đã vắng mặt từ <t:${Math.floor(afkData.timestamp / 1000)}:R> với lý do: "${afkData.reason}")*`)
+        .setColor(0x2ecc71);
+
+      await message.reply({ embeds: [welcomeBackEmbed] }).catch(() => null);
+    }
+
+    // 2. Check if any mentioned users are currently AFK -> Notify the author
+    if (message.mentions.users.size > 0) {
+      for (const [userId, user] of message.mentions.users) {
+        if (userId === message.author.id) continue;
+        if (afkUsers.has(userId)) {
+          const afk = afkUsers.get(userId)!;
+          const afkNotifyEmbed = new EmbedBuilder()
+            .setDescription(`💤 **${user.tag}** hiện đang vắng mặt (AFK): "*${afk.reason}*" (từ <t:${Math.floor(afk.timestamp / 1000)}:R>)`)
+            .setColor(0xf39c12);
+          await message.reply({ embeds: [afkNotifyEmbed] }).catch(() => null);
+          break;
+        }
+      }
+    }
+
     if (message.author.id === OWNER_ID || whitelistedUsers.has(message.author.id)) return; // Whitelist Protected
 
     const content = message.content || '';

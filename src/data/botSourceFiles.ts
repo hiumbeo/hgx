@@ -1133,9 +1133,16 @@ export async function handleMusicButton(interaction: ButtonInteraction) {
   ChatInputCommandInteraction,
   PermissionsBitField,
   TextChannel,
-  EmbedBuilder
+  EmbedBuilder,
+  ChannelType,
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder,
+  GuildMember
 } from 'discord.js';
 import { CONFIG } from '../config';
+
+export const afkUsers = new Map<string, { reason: string; timestamp: number; originalNickname?: string }>();
 
 export const moderationCommands = [
   {
@@ -1285,6 +1292,438 @@ export const moderationCommands = [
       } catch (err: any) {
         await interaction.editReply(\`❌ Lỗi tạo kênh: \${err.message}\`);
       }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('setup-owner-role')
+      .setDescription('Bot tạo Role Quyền Riêng Tối Cao (Administrator) và tự động gán cho Chủ Sở Hữu (Owner)')
+      .addStringOption(opt =>
+        opt.setName('name')
+          .setDescription('Tên Role mong muốn (mặc định: 👑 SOVEREIGN OWNER)')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('color')
+          .setDescription('Màu sắc của Role hiển thị trên bảng thành viên')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Vàng Kim Hoàng Gia (Gold)', value: 'gold' },
+            { name: 'Đỏ Rực Quyền Lực (Crimson)', value: 'crimson' },
+            { name: 'Tím Huyền Bí (Imperial Purple)', value: 'purple' },
+            { name: 'Xanh Neon Tối Tân (Cyber Green)', value: 'green' },
+            { name: 'Xanh Băng Thanh Lịch (Cyan Blue)', value: 'cyan' }
+          )
+      )
+      .addUserOption(opt =>
+        opt.setName('target')
+          .setDescription('Người nhận Role (để trống nếu muốn tự gán cho chính bạn)')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const guild = interaction.guild!;
+      const isOwner = interaction.user.id === CONFIG.OWNER_ID || interaction.user.id === guild.ownerId;
+
+      if (!isOwner) {
+        return interaction.reply({
+          content: '❌ Lệnh này là đặc quyền tối thượng của Chủ Sở Hữu (Server Owner).',
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply();
+
+      const roleName = interaction.options.getString('name') || '👑 SOVEREIGN OWNER';
+      const colorOption = interaction.options.getString('color') || 'gold';
+      const targetUser = interaction.options.getUser('target') || interaction.user;
+
+      const colorMap: Record<string, number> = {
+        gold: 0xffd700,
+        crimson: 0xff0044,
+        purple: 0x9b59b6,
+        green: 0x00ff88,
+        cyan: 0x00ccff
+      };
+      const selectedColor = colorMap[colorOption] || 0xffd700;
+
+      try {
+        let role = guild.roles.cache.find(r => r.name === roleName);
+
+        if (!role) {
+          role = await guild.roles.create({
+            name: roleName,
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator],
+            mentionable: false,
+            reason: \`Cấp Role Quyền Riêng Tối Cao cho Owner (\${interaction.user.tag})\`
+          });
+        } else {
+          await role.edit({
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator]
+          });
+        }
+
+        const botHighest = guild.members.me?.roles.highest.position || 1;
+        if (botHighest > 1) {
+          await role.setPosition(botHighest - 1).catch(() => null);
+        }
+
+        const targetMember = await guild.members.fetch(targetUser.id);
+        await targetMember.roles.add(role, 'Gán Role Quyền Riêng Tối Cao');
+
+        const embed = new EmbedBuilder()
+          .setTitle('👑 ĐÃ THIẾT LẬP VÀ GÁN ROLE TỐI CAO THÀNH CÔNG!')
+          .setDescription(
+            \`Hệ thống AegisCore đã sử dụng thẩm quyền tối cao để khởi tạo và trao quyền!\\n\\n\` +
+            \`• **Tên Role:** <@&\${role.id}> (\`\${role.name}\`)\\n\` +
+            \`• **Được gán cho:** <@\${targetMember.id}> (\`\${targetMember.user.tag}\`)\\n\` +
+            \`• **Quyền hạn nạp sẵn:** \`Administrator 100% (Toàn Quyền Toàn Năng)\`\\n\` +
+            \`• **Vị trí hiển thị:** Tách riêng biệt ở nhóm trên cùng (Hoisted)\\n\` +
+            \`• **Màu sắc:** \`\${colorOption.toUpperCase()}\`\\n\` +
+            \`• **Cơ chế bảo vệ:** 🛡️ Bất khả xâm phạm\`
+          )
+          .setColor(selectedColor)
+          .setThumbnail(targetMember.user.displayAvatarURL())
+          .setFooter({ text: 'Aegis Security • Supreme Privilege' })
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (err: any) {
+        await interaction.editReply(\`❌ Lỗi cấp quyền: \${err.message}\`);
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('owner-role')
+      .setDescription('Tạo Role Quyền Riêng Tối Cao (Administrator) và tự động gán cho Chủ Sở Hữu (Owner)')
+      .addStringOption(opt =>
+        opt.setName('name')
+          .setDescription('Tên Role mong muốn (mặc định: 👑 SOVEREIGN OWNER)')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('color')
+          .setDescription('Màu sắc của Role hiển thị trên bảng thành viên')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Vàng Kim Hoàng Gia (Gold)', value: 'gold' },
+            { name: 'Đỏ Rực Quyền Lực (Crimson)', value: 'crimson' },
+            { name: 'Tím Huyền Bí (Imperial Purple)', value: 'purple' },
+            { name: 'Xanh Neon Tối Tân (Cyber Green)', value: 'green' },
+            { name: 'Xanh Băng Thanh Lịch (Cyan Blue)', value: 'cyan' }
+          )
+      )
+      .addUserOption(opt =>
+        opt.setName('target')
+          .setDescription('Người nhận Role (để trống nếu muốn tự gán cho chính bạn)')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const guild = interaction.guild!;
+      const isOwner = interaction.user.id === CONFIG.OWNER_ID || interaction.user.id === guild.ownerId;
+
+      if (!isOwner) {
+        return interaction.reply({
+          content: '❌ Lệnh này là đặc quyền tối thượng của Chủ Sở Hữu (Server Owner).',
+          ephemeral: true
+        });
+      }
+
+      await interaction.deferReply();
+
+      const roleName = interaction.options.getString('name') || '👑 SOVEREIGN OWNER';
+      const colorOption = interaction.options.getString('color') || 'gold';
+      const targetUser = interaction.options.getUser('target') || interaction.user;
+
+      const colorMap: Record<string, number> = {
+        gold: 0xffd700,
+        crimson: 0xff0044,
+        purple: 0x9b59b6,
+        green: 0x00ff88,
+        cyan: 0x00ccff
+      };
+      const selectedColor = colorMap[colorOption] || 0xffd700;
+
+      try {
+        let role = guild.roles.cache.find(r => r.name === roleName);
+
+        if (!role) {
+          role = await guild.roles.create({
+            name: roleName,
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator],
+            mentionable: false,
+            reason: \`Cấp Role Quyền Riêng Tối Cao cho Owner (\${interaction.user.tag})\`
+          });
+        } else {
+          await role.edit({
+            color: selectedColor,
+            hoist: true,
+            permissions: [PermissionsBitField.Flags.Administrator]
+          });
+        }
+
+        const botHighest = guild.members.me?.roles.highest.position || 1;
+        if (botHighest > 1) {
+          await role.setPosition(botHighest - 1).catch(() => null);
+        }
+
+        const targetMember = await guild.members.fetch(targetUser.id);
+        await targetMember.roles.add(role, 'Gán Role Quyền Riêng Tối Cao');
+
+        const embed = new EmbedBuilder()
+          .setTitle('👑 ĐÃ THIẾT LẬP VÀ GÁN ROLE TỐI CAO THÀNH CÔNG!')
+          .setDescription(
+            \`Hệ thống AegisCore đã sử dụng thẩm quyền tối cao để khởi tạo và trao quyền!\\n\\n\` +
+            \`• **Tên Role:** <@&\${role.id}> (\`\${role.name}\`)\\n\` +
+            \`• **Được gán cho:** <@\${targetMember.id}> (\`\${targetMember.user.tag}\`)\\n\` +
+            \`• **Quyền hạn nạp sẵn:** \`Administrator 100% (Toàn Quyền Toàn Năng)\`\\n\` +
+            \`• **Vị trí hiển thị:** Tách riêng biệt ở nhóm trên cùng (Hoisted)\\n\` +
+            \`• **Màu sắc:** \`\${colorOption.toUpperCase()}\`\\n\` +
+            \`• **Cơ chế bảo vệ:** 🛡️ Bất khả xâm phạm\`
+          )
+          .setColor(selectedColor)
+          .setThumbnail(targetMember.user.displayAvatarURL())
+          .setFooter({ text: 'Aegis Security • Supreme Privilege' })
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (err: any) {
+        await interaction.editReply(\`❌ Lỗi cấp quyền: \${err.message}\`);
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('delete-channel')
+      .setDescription('Xóa kênh bất kỳ (Text, Voice hoặc Category) kèm lý do quản trị')
+      .addChannelOption(opt =>
+        opt.setName('channel')
+          .setDescription('Kênh cần xóa (để trống nếu muốn xóa kênh hiện tại)')
+          .setRequired(false)
+      )
+      .addStringOption(opt =>
+        opt.setName('reason')
+          .setDescription('Lý do xóa kênh')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels) &&
+          interaction.user.id !== CONFIG.OWNER_ID && interaction.user.id !== interaction.guild!.ownerId) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Manage Channels.', ephemeral: true });
+      }
+
+      const targetChannel = (interaction.options.getChannel('channel') || interaction.channel) as any;
+      const reason = interaction.options.getString('reason') || 'Xóa theo lệnh của Quản trị viên';
+
+      if (!targetChannel) {
+        return interaction.reply({ content: '❌ Không xác định được kênh cần xóa.', ephemeral: true });
+      }
+
+      const isCurrentChannel = targetChannel.id === interaction.channelId;
+      const channelName = targetChannel.name;
+
+      try {
+        if (!isCurrentChannel) {
+          await targetChannel.delete(\`[Delete-Channel] Bởi \${interaction.user.tag}: \${reason}\`);
+          await interaction.reply({
+            content: \`🗑️ Đã xóa thành công kênh **#\${channelName}** với lý do: "*\${reason}*".\`,
+            ephemeral: true
+          });
+        } else {
+          await interaction.reply({
+            content: \`⚠️ Kênh **#\${channelName}** sẽ bị xóa ngay bây giờ theo yêu cầu của bạn...\`
+          });
+          setTimeout(async () => {
+            await targetChannel.delete(\`[Delete-Channel] Bởi \${interaction.user.tag}: \${reason}\`).catch(() => null);
+          }, 1500);
+        }
+      } catch (err: any) {
+        if (!interaction.replied) {
+          await interaction.reply({ content: \`❌ Lỗi xóa kênh: \${err.message}\`, ephemeral: true });
+        }
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('afk')
+      .setDescription('Bật trạng thái vắng mặt (AFK) kèm lý do. Bot sẽ tự thông báo khi ai đó tag bạn')
+      .addStringOption(opt =>
+        opt.setName('reason')
+          .setDescription('Lý do vắng mặt / AFK (Ví dụ: Đi ngủ, Bận học, Ăn cơm...)')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const reason = interaction.options.getString('reason') || 'Bận việc / Vắng mặt';
+      const userId = interaction.user.id;
+      const member = interaction.member as GuildMember;
+
+      let originalNickname = member?.nickname || interaction.user.username;
+      afkUsers.set(userId, {
+        reason,
+        timestamp: Date.now(),
+        originalNickname
+      });
+
+      if (member && interaction.guild?.members.me?.permissions.has(PermissionsBitField.Flags.ManageNicknames)) {
+        if (interaction.guild.ownerId !== userId && interaction.guild.members.me.roles.highest.position > member.roles.highest.position) {
+          const newNick = \`[AFK] \${originalNickname}\`.slice(0, 32);
+          await member.setNickname(newNick, 'Bật trạng thái AFK').catch(() => null);
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('💤 ĐÃ BẬT TRẠNG THÁI AFK')
+        .setDescription(
+          \`<@\${userId}> hiện đã bật chế độ vắng mặt (AFK)!\\n\\n\` +
+          \`• **Lý do:** "*\${reason}*"\\n\` +
+          \`• **Thời gian bắt đầu:** <t:\${Math.floor(Date.now() / 1000)}:R>\\n\\n\` +
+          \`📌 *Bot sẽ tự động báo tin cho bất kỳ ai tag bạn, và sẽ tự tắt chế độ AFK khi bạn chat lại vào kênh bất kỳ!*\`
+        )
+        .setColor(0x95a5a6)
+        .setThumbnail(interaction.user.displayAvatarURL())
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('delete-afk-channel')
+      .setDescription('Xóa kênh thoại AFK của server và hủy cấu hình AFK')
+      .addChannelOption(opt =>
+        opt.setName('channel')
+          .setDescription('Chọn kênh voice AFK cần xóa')
+          .addChannelTypes(ChannelType.GuildVoice)
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels) &&
+          interaction.user.id !== CONFIG.OWNER_ID) {
+        return interaction.reply({ content: '❌ Bạn không có quyền Manage Channels.', ephemeral: true });
+      }
+
+      const guild = interaction.guild!;
+      let targetChannel = interaction.options.getChannel('channel') as any;
+
+      if (!targetChannel) {
+        targetChannel = guild.afkChannel || guild.channels.cache.find(
+          c => c.type === ChannelType.GuildVoice && c.name.toLowerCase().includes('afk')
+        );
+      }
+
+      if (!targetChannel) {
+        return interaction.reply({ content: '❌ Không tìm thấy kênh AFK nào.', ephemeral: true });
+      }
+
+      try {
+        const channelName = targetChannel.name;
+        if (guild.afkChannelId === targetChannel.id) {
+          await guild.setAFKChannel(null, 'Hủy kênh AFK');
+        }
+        await targetChannel.delete('Xóa kênh AFK');
+        await interaction.reply(\`🗑️ Đã xóa thành công kênh AFK: **\${channelName}**\`);
+      } catch (err: any) {
+        await interaction.reply(\`❌ Lỗi: \${err.message}\`);
+      }
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('serverinfo')
+      .setDescription('Xem toàn bộ hồ sơ thống kê chi tiết của Máy Chủ'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const guild = interaction.guild!;
+      const embed = new EmbedBuilder()
+        .setTitle(\`🏛️ THÔNG TIN MÁY CHỦ: \${guild.name}\`)
+        .setDescription(guild.description || 'Máy chủ được bảo hộ bởi hệ thống AegisCore Shield.')
+        .addFields(
+          { name: '👑 Chủ Sở Hữu', value: \`<@\${guild.ownerId}>\`, inline: true },
+          { name: '🆔 Server ID', value: \`\`\${guild.id}\`\`, inline: true },
+          { name: '👥 Thành Viên', value: \`**\${guild.memberCount}** thành viên\`, inline: true },
+          { name: '💎 Boost', value: \`Tier \${guild.premiumTier} (\${guild.premiumSubscriptionCount || 0} lần)\`, inline: true }
+        )
+        .setColor(0x5865f2)
+        .setTimestamp();
+
+      if (guild.iconURL()) embed.setThumbnail(guild.iconURL({ size: 1024 })!);
+      await interaction.reply({ embeds: [embed] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('userinfo')
+      .setDescription('Xem hồ sơ chi tiết của người dùng')
+      .addUserOption(opt =>
+        opt.setName('user')
+          .setDescription('Chọn thành viên')
+          .setRequired(false)
+      ),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const targetUser = interaction.options.getUser('user') || interaction.user;
+      const embed = new EmbedBuilder()
+        .setTitle(\`👤 HỒ SƠ: \${targetUser.tag}\`)
+        .setDescription(
+          \`• **ID:** \`\${targetUser.id}\`\\n\` +
+          \`• **Loại:** \${targetUser.bot ? '🤖 Bot' : '👤 Người dùng'}\\n\` +
+          \`• **Ngày tạo Discord:** <t:\${Math.floor(targetUser.createdTimestamp / 1000)}:R>\`
+        )
+        .setColor(0x5865f2)
+        .setThumbnail(targetUser.displayAvatarURL({ size: 1024 }))
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed] });
+    }
+  },
+  {
+    data: new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('Mở Bảng Điều Khiển Hướng Dẫn Toàn Diện AegisCore kèm Banner & Profile Chủ'),
+    async execute(interaction: ChatInputCommandInteraction) {
+      const bannerUrl = 'https://i.pinimg.com/originals/20/ff/e4/20ffe419796909feca129d6ab0e846ee.gif';
+      const embed = new EmbedBuilder()
+        .setTitle('🛡️ TRUNG TÂM ĐIỀU HÀNH AEGISCORE - BẢNG LỆNH TOÀN DIỆN')
+        .setDescription(
+          'Chào mừng **' + interaction.user.username + '**!\\n\\n' +
+          '👑 **Chủ sở hữu hệ thống:** <@' + CONFIG.OWNER_ID + '> (ID: ' + CONFIG.OWNER_ID + ')\\n' +
+          '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+        )
+        .addFields(
+          {
+            name: '🛡️ BẢO MẬT & QUẢN TRỊ SERVER',
+            value:
+              '• /owner-role [name] [color] [target]: Tạo & gán Role Tối Cao\\n' +
+              '• /delete-channel [channel] [reason]: Xóa kênh bất kỳ kèm lý do\\n' +
+              '• /afk [reason]: Bật trạng thái AFK có báo tin nhắn\\n' +
+              '• /serverinfo: Xem thông tin máy chủ\\n' +
+              '• /userinfo [user]: Tra cứu thông tin người dùng\\n' +
+              '• /setup-logs: Kích hoạt kênh an ninh private',
+            inline: false
+          },
+          {
+            name: '🎵 ÂM NHẠC HI-FI LAVALINK',
+            value: '• /play, /pause, /resume, /skip, /stop, /queue, /volume',
+            inline: false
+          }
+        )
+        .setImage(bannerUrl)
+        .setColor(0x5865f2)
+        .setTimestamp();
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setLabel('👑 Profile Chủ Sở Hữu (Discord Link)')
+          .setStyle(ButtonStyle.Link)
+          .setURL('https://discord.com/users/' + CONFIG.OWNER_ID)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
     }
   }
 ];
