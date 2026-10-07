@@ -34,27 +34,21 @@ const customNode = process.env.LAVALINK_HOST ? [
 const LAVALINK_NODES = [
   ...customNode,
   {
-    name: 'Nazha-Global-v4',
-    url: 'lavalink.nazha.online:443',
-    auth: 'nazhafreelava',
-    secure: true
-  },
-  {
     name: 'Serenetia-EU-v4',
     url: 'lavalinkv4.serenetia.com:443',
     auth: 'https://seretia.link/discord',
     secure: true
   },
   {
-    name: 'MilloHost-Asia-v4',
-    url: 'lava-v4.millohost.my.id:443',
-    auth: 'https://discord.gg/mjS5J2K3ep',
+    name: 'Nazha-Global-v4',
+    url: 'lavalink.nazha.online:443',
+    auth: 'nazhafreelava',
     secure: true
   },
   {
-    name: 'TriniumHost-US-v4',
-    url: 'lavalink-v4.triniumhost.com:443',
-    auth: 'free',
+    name: 'MilloHost-Asia-v4',
+    url: 'lava-v4.millohost.my.id:443',
+    auth: 'https://discord.gg/mjS5J2K3ep',
     secure: true
   }
 ];
@@ -264,6 +258,98 @@ async function playNext(guildId: string) {
   }
 }
 
+// Smart Multi-Node & Multi-Source Lavalink Resolver (Fixes Unexpected Error from Lavalink server)
+export async function resolveTrackSmart(query: string, preferredNode?: any): Promise<{ result: any; node: any } | null> {
+  const cleanQuery = query.trim();
+  const isUrl = /^https?:\/\//i.test(cleanQuery);
+
+  // Search prefixes to try in sequence
+  const searchPrefixes = isUrl
+    ? [cleanQuery]
+    : [
+        `ytsearch:${cleanQuery}`,
+        `scsearch:${cleanQuery}`,
+        cleanQuery
+      ];
+
+  // Collect active nodes in priority order: preferredNode, then all connected nodes
+  const activeNodes: any[] = [];
+  if (preferredNode && ((preferredNode as any).state === 2 || (preferredNode as any).state === 'CONNECTED')) {
+    activeNodes.push(preferredNode);
+  }
+
+  for (const n of shoukaku.nodes.values()) {
+    if (!activeNodes.includes(n) && ((n as any).state === 2 || (n as any).state === 'CONNECTED')) {
+      activeNodes.push(n);
+    }
+  }
+
+  // If none explicitly marked connected yet, try all registered nodes
+  if (activeNodes.length === 0) {
+    for (const n of shoukaku.nodes.values()) {
+      activeNodes.push(n);
+    }
+  }
+
+  let lastErr: any = null;
+
+  for (const targetNode of activeNodes) {
+    for (const search of searchPrefixes) {
+      try {
+        const res = await targetNode.rest.resolve(search);
+        if (res && res.data) {
+          if (res.loadType === 'track' || res.loadType === 'playlist') {
+            return { result: res, node: targetNode };
+          }
+          if (res.loadType === 'search' && Array.isArray(res.data) && res.data.length > 0) {
+            return { result: res, node: targetNode };
+          }
+        }
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`[Lavalink Resolve] Node "${targetNode.name}" failed for "${search}": ${err?.message || err}. Trying next candidate...`);
+      }
+    }
+  }
+
+  // HTTP Direct Fallback: in case Shoukaku wrapper encountered an unexpected error on local websocket
+  for (const fallback of [
+    { name: 'Serenetia', url: 'https://lavalinkv4.serenetia.com/v4/loadtracks', auth: 'https://seretia.link/discord' },
+    { name: 'Nazha', url: 'https://lavalink.nazha.online/v4/loadtracks', auth: 'nazhafreelava' },
+    { name: 'MilloHost', url: 'https://lava-v4.millohost.my.id/v4/loadtracks', auth: 'https://discord.gg/mjS5J2K3ep' }
+  ]) {
+    for (const search of searchPrefixes) {
+      try {
+        const fetchUrl = `${fallback.url}?identifier=${encodeURIComponent(search)}`;
+        const r = await fetch(fetchUrl, {
+          headers: { Authorization: fallback.auth },
+          signal: AbortSignal.timeout(3500)
+        });
+        if (r.ok) {
+          const json = await r.json();
+          if (json && json.data) {
+            if (json.loadType === 'track' || json.loadType === 'playlist') {
+              const matchedNode = Array.from(shoukaku.nodes.values()).find(n => n.name.toLowerCase().includes(fallback.name.toLowerCase())) || activeNodes[0];
+              return { result: json, node: matchedNode };
+            }
+            if (json.loadType === 'search' && Array.isArray(json.data) && json.data.length > 0) {
+              const matchedNode = Array.from(shoukaku.nodes.values()).find(n => n.name.toLowerCase().includes(fallback.name.toLowerCase())) || activeNodes[0];
+              return { result: json, node: matchedNode };
+            }
+          }
+        }
+      } catch (e: any) {
+        // try next fallback
+      }
+    }
+  }
+
+  if (lastErr) {
+    console.error('[Lavalink All Nodes Failed]:', lastErr?.message || lastErr);
+  }
+  return null;
+}
+
 // Mini Games: Blackjack & Caro PVP Engine
 interface Card {
   suit: string;
@@ -430,11 +516,16 @@ const slashCommands = [
         await new Promise(r => setTimeout(r, 1200));
         node = shoukaku.getIdealNode();
       }
-      if (!node) {
-        return interaction.editReply('❌ Đang kết nối lại các cụm máy chủ âm thanh Lavalink. Vui lòng bấm thử lại lệnh `/play` sau 2-3 giây!');
-      }
-
       try {
+        // 1. Smart multi-node and multi-source resolution
+        const resolved = await resolveTrackSmart(query, node);
+        if (!resolved || !resolved.result || !resolved.result.data) {
+          return interaction.editReply(`❌ Không tìm thấy bài hát nào với từ khóa: \`${query}\`. Vui lòng thử tìm với tên bài hát khác hoặc dán link YouTube/SoundCloud trực tiếp!`);
+        }
+
+        const { result } = resolved;
+
+        // 2. Connect to voice channel and setup player
         let player = shoukaku.players.get(guildId);
         if (!player) {
           player = await shoukaku.joinVoiceChannel({
@@ -494,14 +585,6 @@ const slashCommands = [
             volume: 80
           };
           musicQueues.set(guildId, queue);
-        }
-
-        const isUrl = /^https?:\/\//i.test(query);
-        const searchInput = isUrl ? query : `ytsearch:${query}`;
-        const result = await node.rest.resolve(searchInput);
-
-        if (!result || !result.data) {
-          return interaction.editReply(`❌ Không tìm thấy bài hát nào với từ khóa: \`${query}\``);
         }
 
         let addedTrack: any = null;

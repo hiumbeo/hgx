@@ -245,12 +245,6 @@ export const CONFIG = {
       url: 'lava-v4.millohost.my.id:443',
       auth: 'https://discord.gg/mjS5J2K3ep',
       secure: true
-    },
-    {
-      name: 'TriniumHost-US-v4',
-      url: 'lavalink-v4.triniumhost.com:443',
-      auth: 'free',
-      secure: true
     }
   ]
 };
