@@ -222,22 +222,34 @@ export const CONFIG = {
 
   // Lavalink Cluster Nodes (Supports multiple public / private nodes with auto-failover)
   LAVALINK_NODES: [
+    ...(process.env.LAVALINK_HOST ? [{
+      name: 'Custom-Node',
+      url: process.env.LAVALINK_HOST + ':' + (process.env.LAVALINK_PORT || 443),
+      auth: process.env.LAVALINK_PASSWORD || 'youshallnotpass',
+      secure: process.env.LAVALINK_SECURE !== 'false'
+    }] : []),
     {
-      name: 'Public-Node-1-US',
-      url: process.env.LAVALINK_HOST_1 || 'lava-v4.ajieblogs.eu.org:443',
-      auth: process.env.LAVALINK_PASS_1 || 'https://dsc.gg/ajidevserver',
+      name: 'Nazha-Global-v4',
+      url: 'lavalink.nazha.online:443',
+      auth: 'nazhafreelava',
       secure: true
     },
     {
-      name: 'Public-Node-2-EU',
-      url: process.env.LAVALINK_HOST_2 || 'lavalink.serenetia.com:443',
-      auth: process.env.LAVALINK_PASS_2 || 'youshallnotpass',
+      name: 'Serenetia-EU-v4',
+      url: 'lavalinkv4.serenetia.com:443',
+      auth: 'https://seretia.link/discord',
       secure: true
     },
     {
-      name: 'Public-Node-3-SG',
-      url: process.env.LAVALINK_HOST_3 || 'node1.inrl.in:443',
-      auth: process.env.LAVALINK_PASS_3 || 'inrl',
+      name: 'MilloHost-Asia-v4',
+      url: 'lava-v4.millohost.my.id:443',
+      auth: 'https://discord.gg/mjS5J2K3ep',
+      secure: true
+    },
+    {
+      name: 'TriniumHost-US-v4',
+      url: 'lavalink-v4.triniumhost.com:443',
+      auth: 'free',
       secure: true
     }
   ]

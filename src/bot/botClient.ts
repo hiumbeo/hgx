@@ -21,24 +21,40 @@ import {
 } from 'discord.js';
 import { Shoukaku, Connectors } from 'shoukaku';
 
-// Lavalink public nodes for audio streaming
+// Lavalink public nodes with custom ENV support & automatic failover
+const customNode = process.env.LAVALINK_HOST ? [
+  {
+    name: 'Custom-Primary-Node',
+    url: `${process.env.LAVALINK_HOST}:${process.env.LAVALINK_PORT || 443}`,
+    auth: process.env.LAVALINK_PASSWORD || 'youshallnotpass',
+    secure: process.env.LAVALINK_SECURE !== 'false'
+  }
+] : [];
+
 const LAVALINK_NODES = [
+  ...customNode,
   {
-    name: 'Public-Node-1-US',
-    url: 'lava-v4.ajieblogs.eu.org:443',
-    auth: 'https://dsc.gg/ajidevserver',
+    name: 'Nazha-Global-v4',
+    url: 'lavalink.nazha.online:443',
+    auth: 'nazhafreelava',
     secure: true
   },
   {
-    name: 'Public-Node-2-EU',
-    url: 'lavalink.serenetia.com:443',
-    auth: 'youshallnotpass',
+    name: 'Serenetia-EU-v4',
+    url: 'lavalinkv4.serenetia.com:443',
+    auth: 'https://seretia.link/discord',
     secure: true
   },
   {
-    name: 'Public-Node-3-IN',
-    url: 'node1.inrl.in:443',
-    auth: 'inrl',
+    name: 'MilloHost-Asia-v4',
+    url: 'lava-v4.millohost.my.id:443',
+    auth: 'https://discord.gg/mjS5J2K3ep',
+    secure: true
+  },
+  {
+    name: 'TriniumHost-US-v4',
+    url: 'lavalink-v4.triniumhost.com:443',
+    auth: 'free',
     secure: true
   }
 ];
@@ -401,9 +417,21 @@ const slashCommands = [
       const query = interaction.options.getString('query', true);
       const guildId = interaction.guildId!;
 
-      const node = shoukaku.getIdealNode();
+      let node = shoukaku.getIdealNode();
       if (!node) {
-        return interaction.editReply('❌ Không tìm thấy cụm máy chủ âm thanh Lavalink nào sẵn sàng. Vui lòng thử lại sau vài giây.');
+        for (const n of shoukaku.nodes.values()) {
+          if ((n as any).state === 2 || (n as any).state === 'CONNECTED') {
+            node = n;
+            break;
+          }
+        }
+      }
+      if (!node) {
+        await new Promise(r => setTimeout(r, 1200));
+        node = shoukaku.getIdealNode();
+      }
+      if (!node) {
+        return interaction.editReply('❌ Đang kết nối lại các cụm máy chủ âm thanh Lavalink. Vui lòng bấm thử lại lệnh `/play` sau 2-3 giây!');
       }
 
       try {
